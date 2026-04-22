@@ -58,6 +58,9 @@ uv run snaq-verify judge outputs/report.json \
     [--concurrency 3]
 ```
 
+The `judge` command writes both `outputs/judge.json` (machine-readable)
+and `outputs/judge.md` (human summary) to the directory of `--out`.
+
 `--apply-corrections` writes `outputs/food_items.corrected.json` with every
 proposed correction (above `--min-confidence`) merged into the originals.
 `-v` raises `snaq_verify` to DEBUG; `-vv` also re-enables the raw

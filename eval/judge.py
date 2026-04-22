@@ -69,7 +69,11 @@ async def _judge_one(agent: Agent[None, JudgeVerdict], row: dict) -> JudgeVerdic
 
 
 async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> None:
-    """Score every item in ``report_path`` and write ``out_path``."""
+    """Score every item in ``report_path`` and write ``out_path``.
+
+    Also writes a sibling ``<stem>.md`` next to ``out_path`` with a
+    human-readable summary table and per-item details.
+    """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
     for name in ("httpx", "httpcore", "openai", "pydantic_ai"):
         logging.getLogger(name).setLevel(logging.WARNING)
@@ -116,10 +120,70 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
             default=str,
         )
     )
+    md_path = out_path.with_suffix(".md")
+    md_path.write_text(render_judge_markdown(verdicts, report_path=report_path))
     n_grounded = sum(1 for v in verdicts if v.grounded)
     _LOG.info(
-        "Judge done: %d/%d grounded -> %s",
+        "Judge done: %d/%d grounded -> %s (+ %s)",
         n_grounded,
         len(verdicts),
         out_path,
+        md_path.name,
     )
+
+
+def render_judge_markdown(
+    verdicts: list[JudgeVerdict], *, report_path: Path | None = None
+) -> str:
+    """Render a markdown view of the judge verdicts.
+
+    Kept next to ``run_judge`` so the two stay in sync; exposed as a
+    module-level function so it can be unit-tested without invoking
+    the LLM.
+    """
+    n = len(verdicts)
+    n_grounded = sum(1 for v in verdicts if v.grounded)
+    avg_conf = (sum(v.judge_confidence for v in verdicts) / n) if n else 0.0
+
+    lines: list[str] = []
+    lines.append("# Judge Report")
+    lines.append("")
+    if report_path is not None:
+        lines.append(f"Scoring: `{report_path}`")
+        lines.append("")
+    lines.append(
+        f"**Grounded:** {n_grounded}/{n} "
+        f"&nbsp;&nbsp; **Avg judge confidence:** {avg_conf:.2f}"
+    )
+    lines.append("")
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| # | Item | Grounded | Confidence | Summary |")
+    lines.append("|---|------|----------|------------|---------|")
+    for i, v in enumerate(verdicts, 1):
+        mark = "\u2705" if v.grounded else "\u26a0\ufe0f"
+        # First sentence only, keep the table legible.
+        first = v.summary.split(". ")[0].strip()
+        if len(first) > 140:
+            first = first[:137].rstrip() + "..."
+        # Escape pipes so a stray '|' in the summary doesn't break the table.
+        first = first.replace("|", "\\|")
+        lines.append(
+            f"| {i} | `{v.item_id}` | {mark} | {v.judge_confidence:.2f} | {first} |"
+        )
+    lines.append("")
+
+    ungrounded = [v for v in verdicts if not v.grounded]
+    if ungrounded:
+        lines.append("## Concerns")
+        lines.append("")
+        for v in ungrounded:
+            lines.append(f"### `{v.item_id}` (conf {v.judge_confidence:.2f})")
+            lines.append("")
+            lines.append(v.summary)
+            lines.append("")
+            if v.concerns:
+                for c in v.concerns:
+                    lines.append(f"- {c}")
+                lines.append("")
+    return "\n".join(lines) + "\n"
