@@ -27,19 +27,45 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from snaq_verify.config import Settings
-from snaq_verify.models import JudgeVerdict
+from snaq_verify.models import JudgeConcern, JudgeVerdict
 
 _LOG = logging.getLogger("snaq_verify.judge")
 
-_JUDGE_SYSTEM_PROMPT = (
-    "You are an evaluator. Read one food item's automated verification "
-    "result and decide whether the stated reasoning is actually supported "
-    "by the listed sources and tool trace. Flag: (a) claims not grounded "
-    "in any source, (b) arithmetic the agent did itself rather than via a "
-    "tool, (c) proposed correction values that don't match any source. "
-    "Return a JudgeVerdict. Be strict: if the reasoning cites a number "
-    "that isn't in any source, it is not grounded."
-)
+_JUDGE_SYSTEM_PROMPT = """\
+You are an evaluator. Read one food item's automated verification result
+and decide whether the stated reasoning is supported by the listed
+sources and tool trace.
+
+Return a JudgeVerdict. Each entry in `concerns` must use one of these
+typed kinds:
+
+- paraphrase: the reasoning restates a number incorrectly from a source.
+- missing_citation: a claim in the reasoning is not supported by any
+  listed source or tool result.
+- correction_provenance: the proposed_correction contains values that
+  cannot be traced back to a cited source.
+- unit_mismatch: two sources are compared without accounting for a
+  definitional difference (e.g. USDA "carbohydrate, by difference"
+  vs CIQUAL "available carbs", kJ vs kcal).
+- wrong_reference: the chosen reference record is the wrong food.
+- rubric_violation: the confidence score violates the stated rubric
+  (two-source match but confidence < 1.0, branded with complete macros
+  but confidence > 0.6, etc.).
+- variance_reasoning: natural-variance items were mishandled (e.g.
+  farmed salmon flagged as DISCREPANCY rather than HIGH_VARIANCE).
+- nitpick: style or phrasing feedback that is NOT a grounding problem.
+  Use this when in doubt -- nitpicks are ignored by CI.
+
+Set `field` to the dotted path inside the VerificationResult when you
+can (e.g. `proposed_correction.calories_kcal`,
+`discrepancies[2].delta_fraction`). Leave it null when the concern
+applies to the whole result.
+
+Set `grounded=false` if any non-nitpick concern applies. A verdict with
+only nitpicks should be `grounded=true`.
+
+Be strict and concrete. One sentence per `detail`.
+"""
 
 
 def _build_judge_agent(settings: Settings) -> tuple[Agent[None, JudgeVerdict], str]:
@@ -103,7 +129,12 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
                 v = JudgeVerdict(
                     item_id=row["result"]["item_id"],
                     grounded=False,
-                    concerns=[f"judge raised: {type(exc).__name__}: {exc}"],
+                    concerns=[
+                        JudgeConcern(
+                            kind="rubric_violation",
+                            detail=f"judge raised: {type(exc).__name__}: {exc}",
+                        )
+                    ],
                     judge_confidence=0.0,
                     summary="Judge failed to produce a verdict.",
                 )
@@ -200,6 +231,21 @@ def render_judge_markdown(
         f"&nbsp;&nbsp; **Avg judge confidence:** {avg_conf:.2f}"
     )
     lines.append("")
+
+    # Concern bucket counts: the single most useful diff across runs.
+    kind_counts: dict[str, int] = {}
+    for v in verdicts:
+        for c in v.concerns:
+            kind_counts[c.kind] = kind_counts.get(c.kind, 0) + 1
+    if kind_counts:
+        lines.append("## Concern kinds")
+        lines.append("")
+        lines.append("| Kind | Count |")
+        lines.append("|------|-------|")
+        for kind, count in sorted(kind_counts.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| `{kind}` | {count} |")
+        lines.append("")
+
     lines.append("## Summary")
     lines.append("")
     lines.append("| # | Item | Grounded | Confidence | Summary |")
@@ -226,8 +272,9 @@ def render_judge_markdown(
             lines.append("")
             lines.append(v.summary)
             lines.append("")
+            for c in v.concerns:
+                target = f" _{c.field}_" if c.field else ""
+                lines.append(f"- **{c.kind}**{target}: {c.detail}")
             if v.concerns:
-                for c in v.concerns:
-                    lines.append(f"- {c}")
                 lines.append("")
     return "\n".join(lines) + "\n"

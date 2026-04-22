@@ -333,6 +333,58 @@ class VerificationResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+JudgeConcernKind = Literal[
+    "paraphrase",
+    "missing_citation",
+    "correction_provenance",
+    "unit_mismatch",
+    "wrong_reference",
+    "rubric_violation",
+    "variance_reasoning",
+    "nitpick",
+]
+
+
+class JudgeConcern(BaseModel):
+    """One typed concern raised by the LLM-as-judge.
+
+    The ``kind`` enum lets us aggregate concerns across runs and tell
+    real grounding problems apart from style nitpicks. ``field`` points
+    at the specific structured location when possible (e.g.
+    ``proposed_correction.calories_kcal``) so a reviewer can jump
+    straight to the offending value.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: JudgeConcernKind = Field(
+        description=(
+            "Taxonomy: 'paraphrase' (narrated a number wrong), "
+            "'missing_citation' (claim not in any source), "
+            "'correction_provenance' (proposed_correction values "
+            "cannot be traced to a source), 'unit_mismatch' (e.g. "
+            "USDA carbs-by-difference vs available carbs), "
+            "'wrong_reference' (chose the wrong record), "
+            "'rubric_violation' (confidence score violates the "
+            "rubric), 'variance_reasoning' (mishandled natural "
+            "variance), 'nitpick' (style/phrasing, not a grounding "
+            "problem -- ignored by CI)."
+        )
+    )
+    field: str | None = Field(
+        default=None,
+        description=(
+            "Dotted path into the VerificationResult when applicable, "
+            "e.g. 'proposed_correction.calories_kcal' or "
+            "'discrepancies[2].delta_fraction'. Null when the concern "
+            "is about the result as a whole."
+        ),
+    )
+    detail: str = Field(
+        description="One sentence describing the specific issue."
+    )
+
+
 class JudgeVerdict(BaseModel):
     """One item's judgement from the LLM-as-judge eval layer."""
 
@@ -342,9 +394,9 @@ class JudgeVerdict(BaseModel):
     grounded: bool = Field(
         description="True when the reasoning is supported by the listed sources."
     )
-    concerns: list[str] = Field(
+    concerns: list[JudgeConcern] = Field(
         default_factory=list,
-        description="Specific issues: unsupported claims, missing citations, math errors.",
+        description="Typed issues with the verification result.",
     )
     judge_confidence: float = Field(
         ge=0.0, le=1.0, description="How confident the judge is in its verdict."

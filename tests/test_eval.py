@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from eval.golden import check
-from snaq_verify.models import JudgeVerdict
+from snaq_verify.models import JudgeConcern, JudgeVerdict
 
 
 def _write_report(tmp_path: Path, items: list[dict]) -> Path:
@@ -86,7 +86,10 @@ def test_render_judge_markdown_contains_header_table_and_concerns() -> None:
         JudgeVerdict(
             item_id="banana-raw",
             grounded=False,
-            concerns=["delta_fraction restated incorrectly", "missing citation for fiber"],
+            concerns=[
+                JudgeConcern(kind="paraphrase", detail="delta_fraction restated incorrectly"),
+                JudgeConcern(kind="missing_citation", detail="missing citation for fiber"),
+            ],
             judge_confidence=0.4,
             summary="Arithmetic paraphrased. A follow-up is needed.",
         ),
@@ -104,8 +107,8 @@ def test_render_judge_markdown_contains_header_table_and_concerns() -> None:
 
     # Ungrounded item has its own details section with concerns
     assert "### `banana-raw`" in md
-    assert "- delta_fraction restated incorrectly" in md
-    assert "- missing citation for fiber" in md
+    assert "delta_fraction restated incorrectly" in md
+    assert "missing citation for fiber" in md
 
     # Grounded item does NOT appear in the Concerns section
     concerns_section = md.split("## Concerns", 1)[1] if "## Concerns" in md else ""

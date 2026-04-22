@@ -70,6 +70,12 @@ class RunMetrics(BaseModel):
         description="Headline metric: grounded_success_count / golden_covered. "
         "0.0 when no items are covered by the golden set."
     )
+    concern_kind_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Aggregate count of typed judge concerns by kind. "
+        "Trend target for M3/M4 (e.g. 'correction_provenance' should "
+        "shrink once the trace carries reference payloads).",
+    )
     items: list[ItemMetric]
 
 
@@ -90,6 +96,13 @@ def compute_metrics(report_path: Path, judge_path: Path) -> RunMetrics:
     verdict_by_id: dict[str, dict[str, Any]] = {
         v["item_id"]: v for v in judge.get("verdicts", [])
     }
+    concern_kind_counts: dict[str, int] = {}
+    for v in verdict_by_id.values():
+        for c in v.get("concerns") or []:
+            # Concerns may be plain strings on legacy reports.
+            if isinstance(c, dict) and "kind" in c:
+                kind = c["kind"]
+                concern_kind_counts[kind] = concern_kind_counts.get(kind, 0) + 1
     status_counts: dict[str, int] = {}
     items: list[ItemMetric] = []
     golden_pass_count = 0
@@ -147,6 +160,7 @@ def compute_metrics(report_path: Path, judge_path: Path) -> RunMetrics:
         grounded_success_rate=(
             grounded_success_count / golden_covered if golden_covered else 0.0
         ),
+        concern_kind_counts=concern_kind_counts,
         items=items,
     )
 
