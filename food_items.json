@@ -1,0 +1,244 @@
+[
+  {
+    "id": "chicken-breast-raw",
+    "name": "Chicken Breast, Skinless, Raw",
+    "brand": null,
+    "category": "Meat & Poultry",
+    "barcode": null,
+    "default_portion": {
+      "amount": 120,
+      "unit": "g",
+      "description": "1 medium breast"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 165,
+      "protein_g": 31.0,
+      "fat_g": 3.6,
+      "saturated_fat_g": 1.0,
+      "carbohydrates_g": 0.0,
+      "sugar_g": 0.0,
+      "fiber_g": 0.0,
+      "sodium_mg": 74
+    }
+  },
+  {
+    "id": "banana-raw",
+    "name": "Banana, Raw",
+    "brand": null,
+    "category": "Fruit",
+    "barcode": null,
+    "default_portion": {
+      "amount": 118,
+      "unit": "g",
+      "description": "1 medium banana, peeled"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 89,
+      "protein_g": 1.1,
+      "fat_g": 0.3,
+      "saturated_fat_g": 0.1,
+      "carbohydrates_g": 23.0,
+      "sugar_g": 12.2,
+      "fiber_g": 2.6,
+      "sodium_mg": 1
+    }
+  },
+  {
+    "id": "broccoli-raw",
+    "name": "Broccoli, Raw",
+    "brand": null,
+    "category": "Vegetables",
+    "barcode": null,
+    "default_portion": {
+      "amount": 85,
+      "unit": "g",
+      "description": "1 cup, chopped"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 34,
+      "protein_g": 2.8,
+      "fat_g": 0.4,
+      "saturated_fat_g": 0.0,
+      "carbohydrates_g": 7.0,
+      "sugar_g": 1.7,
+      "fiber_g": 2.6,
+      "sodium_mg": 33
+    }
+  },
+  {
+    "id": "whole-milk",
+    "name": "Whole Milk, 3.5% Fat",
+    "brand": null,
+    "category": "Dairy",
+    "barcode": null,
+    "default_portion": {
+      "amount": 250,
+      "unit": "ml",
+      "description": "1 glass"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 61,
+      "protein_g": 3.2,
+      "fat_g": 3.5,
+      "saturated_fat_g": 2.1,
+      "carbohydrates_g": 4.8,
+      "sugar_g": 4.8,
+      "fiber_g": 0.0,
+      "sodium_mg": 44
+    }
+  },
+  {
+    "id": "egg-whole-raw",
+    "name": "Egg, Whole, Raw",
+    "brand": null,
+    "category": "Eggs",
+    "barcode": null,
+    "default_portion": {
+      "amount": 60,
+      "unit": "g",
+      "description": "1 large egg"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 155,
+      "protein_g": 13.0,
+      "fat_g": 11.0,
+      "saturated_fat_g": 3.3,
+      "carbohydrates_g": 1.1,
+      "sugar_g": 1.1,
+      "fiber_g": 0.0,
+      "sodium_mg": 124
+    }
+  },
+  {
+    "id": "almonds-raw",
+    "name": "Almonds, Raw",
+    "brand": null,
+    "category": "Nuts & Seeds",
+    "barcode": null,
+    "default_portion": {
+      "amount": 28,
+      "unit": "g",
+      "description": "1 oz (approx. 23 almonds)"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 579,
+      "protein_g": 21.2,
+      "fat_g": 49.9,
+      "saturated_fat_g": 3.8,
+      "carbohydrates_g": 21.6,
+      "sugar_g": 4.4,
+      "fiber_g": 12.5,
+      "sodium_mg": 1
+    }
+  },
+  {
+    "id": "oats-rolled-dry",
+    "name": "Oats, Rolled, Dry",
+    "brand": null,
+    "category": "Grains & Cereals",
+    "barcode": null,
+    "default_portion": {
+      "amount": 40,
+      "unit": "g",
+      "description": "1/2 cup dry"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 240,
+      "protein_g": 8.0,
+      "fat_g": 4.2,
+      "saturated_fat_g": 0.8,
+      "carbohydrates_g": 42.0,
+      "sugar_g": 0.0,
+      "fiber_g": 5.8,
+      "sodium_mg": 4
+    }
+  },
+  {
+    "id": "avocado-raw",
+    "name": "Avocado, Raw",
+    "brand": null,
+    "category": "Fruit",
+    "barcode": null,
+    "default_portion": {
+      "amount": 68,
+      "unit": "g",
+      "description": "1/2 medium avocado"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 160,
+      "protein_g": 2.0,
+      "fat_g": 4.5,
+      "saturated_fat_g": 0.6,
+      "carbohydrates_g": 8.5,
+      "sugar_g": 0.7,
+      "fiber_g": 6.7,
+      "sodium_mg": 7
+    }
+  },
+  {
+    "id": "salmon-atlantic-farmed-raw",
+    "name": "Salmon, Atlantic, Farmed, Raw",
+    "brand": null,
+    "category": "Fish & Seafood",
+    "barcode": null,
+    "default_portion": {
+      "amount": 150,
+      "unit": "g",
+      "description": "1 fillet"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 131,
+      "protein_g": 20.4,
+      "fat_g": 5.2,
+      "saturated_fat_g": 1.2,
+      "carbohydrates_g": 0.0,
+      "sugar_g": 0.0,
+      "fiber_g": 0.0,
+      "sodium_mg": 59
+    }
+  },
+  {
+    "id": "fage-total-0-greek-yogurt",
+    "name": "Total 0% Greek Yogurt, Plain",
+    "brand": "Fage",
+    "category": "Dairy",
+    "barcode": "5200435000027",
+    "default_portion": {
+      "amount": 170,
+      "unit": "g",
+      "description": "1 container"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 57,
+      "protein_g": 5.5,
+      "fat_g": 0.2,
+      "saturated_fat_g": 0.1,
+      "carbohydrates_g": 6.4,
+      "sugar_g": 6.4,
+      "fiber_g": 0.0,
+      "sodium_mg": 41
+    }
+  },
+  {
+    "id": "white-bread",
+    "name": "White Bread",
+    "brand": null,
+    "category": "Bread & Bakery",
+    "barcode": null,
+    "default_portion": {
+      "amount": 30,
+      "unit": "g",
+      "description": "1 slice"
+    },
+    "nutrition_per_100g": {
+      "calories_kcal": 198,
+      "protein_g": 6.5,
+      "fat_g": 1.1,
+      "saturated_fat_g": 0.3,
+      "carbohydrates_g": 40.5,
+      "sugar_g": 3.2,
+      "fiber_g": 1.2,
+      "sodium_mg": 350
+    }
+  }
+]
