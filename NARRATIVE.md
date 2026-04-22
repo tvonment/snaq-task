@@ -1,7 +1,6 @@
 # Working narrative
 
-SNAQ asks for the AI conversation log alongside the code. The raw
-transcripts are in `.specstory/`. This file is the short version: how
+SNAQ asks for the AI conversation log alongside the code. How
 the project actually unfolded, where the AI helped, where it pulled
 toward bad ideas, and where I overruled it.
 
@@ -9,13 +8,17 @@ toward bad ideas, and where I overruled it.
 
 ## 1. Architectural pushback before any code
 
-The AI's first instinct, when handed the brief, was to propose a
-React/Vite frontend for uploading and reviewing items, an MCP server
-exposing the tools over SSE, a separate FastAPI backend, and a
-docker-compose to wire them all together. It was well-specified and
-completely wrong for this task.
+Before opening VS Code I'd already had a scoping chat with Claude
+(shared here:
+https://claude.ai/share/3ac464be-96f1-4488-91b2-84f67c314142). That
+conversation sketched out something much more elaborate — a React/Vite
+frontend for uploading and reviewing items, an MCP server exposing the
+tools over SSE, a separate FastAPI backend, and a docker-compose to
+wire it all together. It was my idea, not the model's; Claude was just
+happy to help me spec it.
 
-I pushed back explicitly:
+I brought that shape into this repo's first Copilot turn in the form
+of initial instructions, and then immediately second-guessed myself:
 
 > "please review the instructions and the home_task.md. review the
 > architecture in the instructions and recheck if this is a way we
@@ -24,18 +27,18 @@ I pushed back explicitly:
 The brief is explicit — *"a simple, well-reasoned solution beats a
 complex one that you can't fully explain"* — the input is a JSON file,
 and reviewers grade by running the code. A UI adds scope without signal
-on the thing being evaluated: agent design.
+on the thing being evaluated: agent design. To its credit, Copilot
+pushed back hard on what I'd brought in and argued for a single-package
+Python CLI with pydantic-ai, native (in-process) tools, pure-Python
+math, Azure OpenAI for the LLM, and optional static HTML as the only
+"UI". I asked it to write that up as `DESIGN.md` and a prescriptive
+`copilot-instructions.md` *before* writing any code — so the rest of
+the session had something concrete to be held accountable to.
 
-After the pushback the AI re-proposed a single-package Python CLI with
-pydantic-ai, native (in-process) tools, pure-Python math, Azure OpenAI
-for the LLM, and optional static HTML as the only "UI". I told it to
-write that up as `DESIGN.md` and a prescriptive `copilot-instructions.md`
-before writing any code — so the rest of the session had something to
-be held accountable to.
-
-Lesson: the AI will happily build whatever you let it. The single
-highest-leverage prompt in this session was "re-read the brief and
-justify the architecture."
+Lesson for me: the most valuable thing an AI pairing partner does is
+push back on the human when the human is wrong. The single
+highest-leverage prompt in the whole project was asking it to re-read
+the brief and justify the architecture I'd brought in.
 
 ## 2. The design, in one paragraph
 
@@ -149,6 +152,11 @@ engineer: a short architectural argument up front, a boring and test-
 first middle, two real integration surprises at the end, and one
 environmental gotcha I couldn't code around.
 
-The full turn-by-turn AI transcript is in `.specstory/` for anyone who
-wants to see the prompts, the tool calls, and the places I had to say
-"no, re-read the brief."
+The two AI conversations that produced this repo are:
+
+1. Initial scoping in Claude chat —
+   https://claude.ai/share/3ac464be-96f1-4488-91b2-84f67c314142
+   (the over-engineered plan I later walked back).
+2. The Copilot session in this workspace, which did the actual
+   implementation, the architecture rewrite, and all the debugging
+   described above.

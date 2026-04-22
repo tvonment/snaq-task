@@ -225,4 +225,4 @@ residential IP or a non-blocked host; your `USDA_API_KEY` is fine.
 | README (setup, decisions, future work) | this file |
 | Design rationale | [DESIGN.md](DESIGN.md) |
 | Output on `food_items.json` | `outputs/report.{json,md,html}` |
-| AI conversation log | `.specstory/` session transcripts |
+| AI conversation log | [NARRATIVE.md](NARRATIVE.md) + linked Claude share |
