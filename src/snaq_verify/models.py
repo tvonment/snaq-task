@@ -290,6 +290,15 @@ class ToolCall(BaseModel):
     tool: str = Field(description="Tool name.")
     args: dict = Field(description="Serialized arguments.")
     result_summary: str = Field(description="Short summary of the tool's output.")
+    result_payload: dict | None = Field(
+        default=None,
+        description=(
+            "Full structured result of the call when it is auditable "
+            "data (e.g. a NutritionReference's nutrition + citation). "
+            "Null for pure-logic tools whose full output is already "
+            "captured in the VerificationResult fields."
+        ),
+    )
     latency_ms: float = Field(description="Wall-clock latency of the call.")
 
 

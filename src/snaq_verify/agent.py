@@ -28,6 +28,7 @@ from snaq_verify.clients.usda import USDAClient
 from snaq_verify.config import Settings
 from snaq_verify.logic.completeness import assess_reference_completeness
 from snaq_verify.logic.discrepancy import calculate_discrepancy
+from snaq_verify.logic.semantics import SemanticsComparison, compare_semantics
 from snaq_verify.logic.validation import validate_macro_consistency
 from snaq_verify.logic.variance import check_known_variance
 from snaq_verify.models import (
@@ -36,6 +37,7 @@ from snaq_verify.models import (
     NutritionPer100g,
     NutritionReference,
     ReferenceCompletenessResult,
+    SourceName,
     ToolCall,
     VarianceInfo,
     VerificationResult,
@@ -75,6 +77,12 @@ Tool routing:
   and calculate_discrepancy_tool. Do not do arithmetic yourself -- if a
   reference looks incomplete, treat it as incomplete rather than
   back-filling values.
+- When you compare references from different sources (USDA + CIQUAL,
+  USDA + OFF, etc.) call compare_semantics_tool first. Its notes
+  explain which field deltas are definitional rather than real (e.g.
+  USDA 'carbohydrate, by difference' includes fibre; CIQUAL
+  'glucides' does not). Use those notes to decide whether a delta
+  warrants a DISCREPANCY verdict.
 
 Confidence scoring:
 - 1.0 when two independent sources (USDA and CIQUAL, or USDA and OFF)
@@ -90,7 +98,10 @@ Confidence scoring:
 
 Propose a correction only when status is DISCREPANCY and confidence is
 at least 0.8. Never invent a value -- copy the reference's numbers
-verbatim, leaving fields null when the reference has no data.
+verbatim, leaving fields null when the reference has no data. Every
+value in proposed_correction must come directly from one of the
+NutritionReference objects returned by a lookup tool in this run; do
+not average, interpolate, or back-compute values across sources.
 
 Reasoning output (VerificationReasoning):
 - routing_decision: one of "barcode_off", "generic_usda",
@@ -141,12 +152,20 @@ def build_agent(settings: Settings) -> Agent[Deps, VerificationResult]:
 # ---------------------------------------------------------------------------
 
 
-def _trace(deps: Deps, tool: str, args: dict, result_summary: str, t0: float) -> None:
+def _trace(
+    deps: Deps,
+    tool: str,
+    args: dict,
+    result_summary: str,
+    t0: float,
+    result_payload: dict | None = None,
+) -> None:
     deps.trace.append(
         ToolCall(
             tool=tool,
             args=args,
             result_summary=result_summary,
+            result_payload=result_payload,
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
     )
@@ -175,6 +194,7 @@ def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
             {"name": name, "category": category, "data_type": data_type},
             f"match={result.match_name!r}" if result else "no match",
             t0,
+            result_payload=result.model_dump(mode="json") if result else None,
         )
         return result
 
@@ -191,6 +211,7 @@ def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
             {"barcode": barcode},
             f"match={result.match_name!r}" if result else "no match",
             t0,
+            result_payload=result.model_dump(mode="json") if result else None,
         )
         return result
 
@@ -277,6 +298,31 @@ def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
             "lookup_ciqual_by_name",
             {"name": name, "category": category},
             f"match={result.match_name!r}" if result else "no match",
+            t0,
+            result_payload=result.model_dump(mode="json") if result else None,
+        )
+        return result
+
+    @agent.tool
+    def compare_semantics_tool(
+        ctx: RunContext[Deps], source_a: SourceName, source_b: SourceName
+    ) -> SemanticsComparison:
+        """Known definitional quirks between two sources.
+
+        Call this whenever you compare references from different sources
+        (e.g. USDA + CIQUAL). The notes explain where small deltas are
+        definitional (carbs-by-difference vs available carbs, Atwater
+        energy factors, salt vs sodium) rather than real disagreement,
+        which should inform the source_choice_rationale and prevent
+        DISCREPANCY calls on fields that are known to differ by construction.
+        """
+        t0 = time.perf_counter()
+        result = compare_semantics(source_a, source_b)
+        _trace(
+            ctx.deps,
+            "compare_semantics",
+            {"source_a": source_a, "source_b": source_b},
+            f"{len(result.notes)} note(s): {[n.kind for n in result.notes]}",
             t0,
         )
         return result
