@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -22,7 +21,6 @@ class Settings:
     azure_deployment: str
     usda_api_key: str
     max_concurrent: int
-    cache_path: Path
     log_level: str
 
     @classmethod
@@ -45,6 +43,5 @@ class Settings:
             azure_deployment=required("AZURE_OPENAI_DEPLOYMENT"),
             usda_api_key=required("USDA_API_KEY"),
             max_concurrent=int(os.environ.get("MAX_CONCURRENT_VERIFICATIONS", "5")),
-            cache_path=Path(os.environ.get("CACHE_PATH", ".cache/snaq.sqlite")),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )

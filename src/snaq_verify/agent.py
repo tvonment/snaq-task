@@ -3,7 +3,7 @@
 Design:
 - ONE Agent instance, configured once at import.
 - Output type is :class:`VerificationResult` -> the LLM returns structured data.
-- Lookup tools (USDA, OFF) are async and wrap the clients + cache.
+- Lookup tools (USDA, OFF, CIQUAL) are thin wrappers over the clients.
 - Pure-logic tools (macro consistency, discrepancy, variance) call the
   modules under :mod:`snaq_verify.logic`.
 
@@ -22,7 +22,6 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from snaq_verify.cache import _MISS, ResponseCache
 from snaq_verify.clients.ciqual import CIQUALClient
 from snaq_verify.clients.openfoodfacts import OpenFoodFactsClient
 from snaq_verify.clients.usda import USDAClient
@@ -50,7 +49,6 @@ class Deps:
     usda: USDAClient
     off: OpenFoodFactsClient
     ciqual: CIQUALClient
-    cache: ResponseCache | None
     trace: list[ToolCall] = field(default_factory=list)
 
 
@@ -140,44 +138,6 @@ def _trace(deps: Deps, tool: str, args: dict, result_summary: str, t0: float) ->
     )
 
 
-async def _cached_usda_search(
-    deps: Deps, query: str, data_type: str
-) -> NutritionReference | None:
-    cache_key = f"search:{data_type}:{query.lower()}"
-    if deps.cache is not None:
-        cached = deps.cache.get("USDA", cache_key)
-        if cached is not _MISS:
-            return cached  # type: ignore[return-value]
-    result = await deps.usda.search(query, data_type=data_type)  # type: ignore[arg-type]
-    if deps.cache is not None:
-        deps.cache.set("USDA", cache_key, result)
-    return result
-
-
-async def _cached_off_barcode(deps: Deps, barcode: str) -> NutritionReference | None:
-    cache_key = f"barcode:{barcode}"
-    if deps.cache is not None:
-        cached = deps.cache.get("OpenFoodFacts", cache_key)
-        if cached is not _MISS:
-            return cached  # type: ignore[return-value]
-    result = await deps.off.lookup_by_barcode(barcode)
-    if deps.cache is not None:
-        deps.cache.set("OpenFoodFacts", cache_key, result)
-    return result
-
-
-def _cached_ciqual_search(deps: Deps, query: str) -> NutritionReference | None:
-    cache_key = f"search:{query.lower()}"
-    if deps.cache is not None:
-        cached = deps.cache.get("CIQUAL", cache_key)
-        if cached is not _MISS:
-            return cached  # type: ignore[return-value]
-    result = deps.ciqual.search(query)
-    if deps.cache is not None:
-        deps.cache.set("CIQUAL", cache_key, result)
-    return result
-
-
 def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
     """Attach typed tools to the agent."""
 
@@ -194,7 +154,7 @@ def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
         LLM, but USDA's search API doesn't use it server-side.
         """
         t0 = time.perf_counter()
-        result = await _cached_usda_search(ctx.deps, name, data_type)
+        result = await ctx.deps.usda.search(name, data_type=data_type)
         _trace(
             ctx.deps,
             "lookup_usda_by_name",
@@ -210,7 +170,7 @@ def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
     ) -> NutritionReference | None:
         """Fetch a product from Open Food Facts by barcode (EAN/UPC)."""
         t0 = time.perf_counter()
-        result = await _cached_off_barcode(ctx.deps, barcode)
+        result = await ctx.deps.off.lookup_by_barcode(barcode)
         _trace(
             ctx.deps,
             "lookup_off_by_barcode",
@@ -297,7 +257,7 @@ def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
         agreement is the only path to confidence 1.0.
         """
         t0 = time.perf_counter()
-        result = _cached_ciqual_search(ctx.deps, name)
+        result = ctx.deps.ciqual.search(name)
         _trace(
             ctx.deps,
             "lookup_ciqual_by_name",

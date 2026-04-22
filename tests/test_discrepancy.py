@@ -72,3 +72,43 @@ def test_reference_zero_but_provided_large_flags_discrepancy() -> None:
     sugar = next(f for f in report.fields if f.field == "sugar_g")
     assert sugar.exceeds_tolerance is True
     assert sugar.delta_fraction is None  # undefined ratio, still flagged
+
+
+def test_low_value_fat_reports_honest_ratio_not_masked_zero() -> None:
+    # Regression: banana fat 0.30 g vs CIQUAL 0.27 g is ~+11 %.
+    # The old floor of 0.5 g masked this to delta_fraction=0.0.
+    report = calculate_discrepancy(
+        _n(fat_g=0.30, saturated_fat_g=0.1),
+        _n(fat_g=0.27, saturated_fat_g=0.1),
+    )
+    fat = next(f for f in report.fields if f.field == "fat_g")
+    assert fat.delta_fraction is not None
+    assert fat.delta_fraction == pytest.approx((0.30 - 0.27) / 0.27, rel=1e-3)
+    # Under 15 % macro tolerance, so not flagged — but the number is real.
+    assert fat.exceeds_tolerance is False
+
+
+def test_low_value_saturated_fat_reports_honest_ratio() -> None:
+    # Banana sat_fat 0.10 g vs 0.112 g is ~-10.7 %.
+    report = calculate_discrepancy(_n(saturated_fat_g=0.10), _n(saturated_fat_g=0.112))
+    sat = next(f for f in report.fields if f.field == "saturated_fat_g")
+    assert sat.delta_fraction is not None
+    assert sat.delta_fraction == pytest.approx((0.10 - 0.112) / 0.112, rel=1e-3)
+    assert sat.exceeds_tolerance is False
+
+
+def test_low_value_sodium_reports_honest_ratio() -> None:
+    # Banana sodium 1.0 mg vs 1.3 mg is ~-23 %, under the 25 % sodium band.
+    report = calculate_discrepancy(_n(sodium_mg=1.0), _n(sodium_mg=1.3))
+    sodium = next(f for f in report.fields if f.field == "sodium_mg")
+    assert sodium.delta_fraction is not None
+    assert sodium.delta_fraction == pytest.approx((1.0 - 1.3) / 1.3, rel=1e-3)
+    assert sodium.exceeds_tolerance is False
+
+
+def test_trace_level_sugar_still_short_circuits() -> None:
+    # 0.02 g vs 0.05 g sugar is noise, not a discrepancy: both below floor.
+    report = calculate_discrepancy(_n(sugar_g=0.02), _n(sugar_g=0.05))
+    sugar = next(f for f in report.fields if f.field == "sugar_g")
+    assert sugar.delta_fraction == pytest.approx(0.0)
+    assert sugar.exceeds_tolerance is False

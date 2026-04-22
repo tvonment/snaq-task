@@ -56,10 +56,6 @@ def verify(
             help="Minimum confidence required to auto-apply a correction.",
         ),
     ] = 0.8,
-    no_cache: Annotated[
-        bool,
-        typer.Option("--no-cache", help="Bypass the on-disk response cache."),
-    ] = False,
     concurrency: Annotated[
         int | None,
         typer.Option("--concurrency", "-c", help="Override MAX_CONCURRENT_VERIFICATIONS."),
@@ -89,7 +85,6 @@ def verify(
             formats=requested_formats,
             apply_corrections=apply_corrections,
             min_confidence=min_confidence,
-            use_cache=not no_cache,
             concurrency_override=concurrency,
             verbose=verbose,
         )

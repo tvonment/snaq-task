@@ -11,7 +11,6 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from snaq_verify.agent import INSTRUCTIONS, Deps, build_agent
-from snaq_verify.cache import ResponseCache
 from snaq_verify.clients.ciqual import CIQUALClient
 from snaq_verify.clients.openfoodfacts import OpenFoodFactsClient
 from snaq_verify.clients.usda import USDAClient
@@ -62,7 +61,6 @@ async def run_verification(
     formats: tuple[str, ...],
     apply_corrections: bool,
     min_confidence: float,
-    use_cache: bool,
     concurrency_override: int | None,
     verbose: int = 0,
 ) -> None:
@@ -73,13 +71,11 @@ async def run_verification(
     items = _FOOD_ITEMS_ADAPTER.validate_json(input_file.read_text())
     concurrency = concurrency_override or settings.max_concurrent
     _LOG.info(
-        "Verifying %d items  concurrency=%d  cache=%s",
+        "Verifying %d items  concurrency=%d",
         len(items),
         concurrency,
-        "on" if use_cache else "off",
     )
 
-    cache = ResponseCache(settings.cache_path) if use_cache else None
     agent = build_agent(settings)
 
     async with (
@@ -95,7 +91,7 @@ async def run_verification(
         async def verify_one(item: FoodItem) -> tuple[VerificationResult, list[ToolCall]]:
             nonlocal completed
             async with sem:
-                deps = Deps(usda=usda, off=off, ciqual=ciqual, cache=cache)
+                deps = Deps(usda=usda, off=off, ciqual=ciqual)
                 prompt = _format_prompt(item)
                 t0 = time.perf_counter()
                 try:
@@ -124,9 +120,6 @@ async def run_verification(
                 return result, deps.trace
 
         pairs = await asyncio.gather(*(verify_one(i) for i in items))
-
-    if cache is not None:
-        cache.close()
 
     results = [pair[0] for pair in pairs]
     traces = {pair[0].item_id: pair[1] for pair in pairs}

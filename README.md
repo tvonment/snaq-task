@@ -49,7 +49,6 @@ uv run snaq-verify verify food_items.json \
     [--out outputs/] \
     [--format json,md] \
     [--apply-corrections --min-confidence 0.8] \
-    [--no-cache] \
     [--concurrency 5] \
     [-v | -vv]
 
@@ -74,9 +73,8 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-39 unit tests covering pure logic, HTTP clients (mocked via `respx`,
-including 429 + `Retry-After` handling), and the cache. No network
-required.
+39 unit tests covering pure logic and HTTP clients (mocked via `respx`,
+including 429 + `Retry-After` handling). No network required.
 
 ---
 
@@ -124,7 +122,7 @@ docker-compose, no frontend.
 | **Known-variance catalogue** | Farmed vs wild salmon, avocado, whole milk fat bands, ground beef: these are *naturally* variable and resolve to `HIGH_VARIANCE`, not `DISCREPANCY`. |
 | **Corrections are conservative** | Only proposed when `confidence >= 0.8` AND exactly one authoritative source was used. Matches how a human nutritionist would behave. |
 | **Confidence caps for incomplete references** | When a matched source record has zero kcal or is missing two+ core macros, confidence is capped at 0.6 no matter the source type. Without this, a USDA Foundation record missing `Energy (kcal, 1008)` would still score 0.8 — even though the agent then has to back-compute the value itself. |
-| **SQLite cache + tenacity + semaphore** | Reproducible reruns, no API hammering, one bad item can't kill the batch. `asyncio.gather(..., return_exceptions=True)`. |
+| **tenacity + semaphore** | Exponential backoff with jitter on 429/5xx; bounded concurrency so one bad item can't kill the batch (`asyncio.gather(..., return_exceptions=True)`). |
 
 ---
 
@@ -191,7 +189,6 @@ src/snaq_verify/
   runner.py        gather + semaphore orchestration
   agent.py         pydantic-ai Agent + tool registrations + system prompt
   models.py        All shared Pydantic models
-  cache.py         SQLite response cache
   report.py        JSON + Markdown writers
   config.py        Env-loaded settings
   clients/

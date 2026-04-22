@@ -22,16 +22,21 @@ _FIELD_TOLERANCES: dict[str, float] = {
 }
 
 # Small absolute floor below which a field is "effectively zero" and we
-# don't flag a ratio blow-up (e.g. 0.1 g vs 0.05 g sugar).
+# don't flag a ratio blow-up (e.g. 0.01 g vs 0.02 g sugar in chicken).
+#
+# These are deliberately tight: realistic low-value comparisons such as
+# banana fat 0.30 g vs 0.27 g (~11 %) or sat_fat 0.10 g vs 0.11 g must
+# yield an honest ratio, not be masked to 0.0. The floor only exists to
+# short-circuit genuinely trace-level pairs where both sides round to 0.
 _ABSOLUTE_FLOOR: dict[str, float] = {
-    "calories_kcal": 5.0,
-    "protein_g": 0.5,
-    "fat_g": 0.5,
-    "saturated_fat_g": 0.5,
-    "carbohydrates_g": 0.5,
-    "sugar_g": 0.5,
-    "fiber_g": 0.5,
-    "sodium_mg": 5.0,
+    "calories_kcal": 1.0,
+    "protein_g": 0.1,
+    "fat_g": 0.1,
+    "saturated_fat_g": 0.05,
+    "carbohydrates_g": 0.1,
+    "sugar_g": 0.1,
+    "fiber_g": 0.1,
+    "sodium_mg": 1.0,
 }
 
 
