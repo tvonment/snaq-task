@@ -257,3 +257,27 @@ brief asks about *reasonableness of heuristics* and *the hard parts of
 this task*, and you can't answer those honestly without a critical
 second pass. The first pass got the architecture right; the second
 pass found the bugs.
+
+## 10. Closing the loop: let the judge drive the next five changes
+
+Section 9 ended at "we have an LLM-as-judge, thin". That's a starting
+condition, not an end state. If you have a judge, you should be using
+its output as a concrete to-do list for the verifier \u2014 otherwise the
+judge is ceremony.
+
+So I drew up a short plan (M1\u2013M6) and let the judge's typed concern
+taxonomy pick the targets. The loop was: one change at a time, run
+verify + judge end-to-end, read `concern_kind_counts` in
+`metrics.json`, commit with before/after bucket numbers in the body,
+move on.
+
+- **M1 \u2014 discrepancy floor + rip the cache.** The discrepancy math had
+  a floor bug that let \"-100%\" collapse to a smaller percentage for
+  near-zero provided values; fixed with an `_ABSOLUTE_FLOOR` and a
+  table of regression tests. At the same time I tore out the SQLite
+  response cache. It had started hiding real regressions in the
+  judge/golden pipeline (a stale cached USDA response would keep a
+  broken verifier looking correct), and the cost of an uncached run
+  against 11 items is trivial.
+- **M2 \u2014 structured, digit-free reasoning.** `VerificationResult.reasoning`
+  went from a free-form string to a Pydantic model\n  (`routing_decision` / `source_choice_rationale` / `variance_notes` /\n  `correction_rationale`) with a `model_validator` that rejects any\n  digit. The agent can't paraphrase numbers badly anymore \u2014 it has to\n  name the quantity (\"calories look low versus USDA Foundation\")\n  instead of approximating it (\"calories differ by roughly 30\").\n  Numbers live in `discrepancies`.\n- **M3 \u2014 typed judge concerns.** The judge was returning free-text\n  \"concerns\"; the 8-kind enum (`wrong_reference`,\n  `correction_provenance`, `unit_mismatch`, `missing_citation`,\n  `paraphrase`, `rubric_violation`, `variance_reasoning`, `nitpick`)\n  turned those into a histogram we could track over runs. `nitpick` is\n  the escape hatch: judges flag it, but it doesn't count against\n  `grounded`. The first run with the enum gave a clean baseline\n  histogram \u2014 eight `wrong_reference`, seven `correction_provenance`,\n  five `unit_mismatch`. That's the to-do list.\n- **M5 \u2014 `grounded_success_rate` + provenance on the judge.** An item\n  passes the golden set *and* the judge calls it grounded \u2014 one\n  number per run, in `metrics.json`. `judge.json` and `judge.md` also\n  got `generated_at` and `judge_deployment` so fresh and stale\n  artefacts can't be confused, and so gpt-5-mini-judged and\n  gpt-5-chat-1-judged runs are comparable by inspection.\n- **M4 \u2014 reference payloads in the trace + semantics catalogue.** The\n  two biggest buckets at baseline were `wrong_reference` and\n  `correction_provenance`: the judge couldn't verify the agent's\n  proposed corrections because the trace only carried a one-line\n  match summary, not the numbers the agent saw. Adding\n  `ToolCall.result_payload` (the full `NutritionReference` model_dump\n  for every lookup) gave the judge something to check against.\n  Simultaneously, `logic/semantics.py` + a pure `compare_semantics`\n  tool attacked `unit_mismatch`: USDA \"carbohydrate, by difference\"\n  vs CIQUAL `glucides` is a definitional delta, not a disagreement,\n  and the agent should know that before it computes a discrepancy.\n\nThe bucket shape after M4 (judge = gpt-5-chat-1, verifier = gpt-5-mini,\nn = 11):\n\n| concern_kind          | M3 baseline | After M4 |\n|-----------------------|-------------|----------|\n| `correction_provenance` | 7           | **2**    |\n| `wrong_reference`       | 8           | **4**    |\n| `rubric_violation`      | 5           | **2**    |\n| `unit_mismatch`         | 5           | 7\u2020       |\n| `grounded_success_rate` | 0.27        | **0.45** |\n\n\u2020 `unit_mismatch` ticked up because the semantics notes now appear\n*in the trace*; the mismatches were already there, the judge just\ncouldn't cite them before. That's the right direction.\n\nWhat made this loop work was investing in M2, M3 and M5 *before*\ntouching M4. The verifier's schema (structured reasoning, digit-free\nprose), the judge's schema (typed concerns), and the aggregate metric\n(`grounded_success_rate`) are all typed Pydantic models \u2014 so the\nchanges in M4 had somewhere concrete to land. Without any one of\nthem, M4 would have been \"the judge seems happier\", which isn't a\nmetric.\n\nThe remaining buckets (`wrong_reference=4`, `unit_mismatch=7`) are\nthe next session's problem \u2014 probably a better USDA match-relevance\ngate and per-source semantic filtering at the discrepancy layer. The\nloop is set up to answer that the same way.

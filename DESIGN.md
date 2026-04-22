@@ -53,6 +53,7 @@ food_items.json
 │  calculate_discrepancy(provided, reference)   [pure]    │
 │  assess_reference_completeness(reference)     [pure]    │
 │  check_known_variance(name, category)         [pure]    │
+│  compare_semantics(source_a, source_b)        [pure]    │
 └─────────────────────────────────────────────────────────┘
       │
       ▼
@@ -137,6 +138,30 @@ authoritative source is available. Otherwise the result carries the
 discrepancy but no `proposed_correction`. This matches how a human
 nutritionist would behave.
 
+Every field in a `proposed_correction` must come verbatim from one of
+the `NutritionReference` records returned by a lookup tool in the same
+run. No averaging, no interpolation, no back-computing. The structured
+tool `trace` (which includes the full reference payload via
+`ToolCall.result_payload`) lets the judge check this mechanically.
+
+### 4.7 Definitional mismatches, named explicitly
+
+Two sources can disagree on the value of `carbohydrates_g` without
+actually disagreeing: USDA reports "carbohydrate, by difference" (which
+includes fibre), CIQUAL reports `glucides` (available carbohydrates,
+which excludes fibre). Same for energy — USDA records may ship kcal,
+kJ, or only the Atwater-factor kcal (2047); CIQUAL uses the EU 1169/2011
+factors. And OFF sometimes stores "salt" where USDA stores "sodium".
+
+A small pure catalogue in `logic/semantics.py` names these cases and
+exposes them as a typed `compare_semantics(source_a, source_b)` tool.
+The agent is instructed to call it before computing a discrepancy
+across sources, so a delta that is actually a definition doesn't
+become a `DISCREPANCY` verdict. This was added after the judge flagged
+five `unit_mismatch` concerns on a baseline run against the 11-item
+sample — the fix is a pure-Python pure-logic table, not prompt
+engineering.
+
 ## 5. Data model (sketch)
 
 ```python
@@ -148,21 +173,41 @@ class VerificationResult(BaseModel):
     macro_consistency: MacroConsistencyResult
     discrepancies: list[FieldDiscrepancy]      # empty if VERIFIED
     proposed_correction: NutritionPer100g | None
-    reasoning: str               # LLM's short natural-language note
-    trace: list[ToolCall]        # tool, args, result, latency_ms
+    reasoning: VerificationReasoning           # structured, digit-free
+    trace: list[ToolCall]                      # tool, args, result_summary,
+                                               # result_payload, latency_ms
 ```
+
+`VerificationReasoning` has four string fields (`routing_decision`,
+`source_choice_rationale`, `variance_notes`, `correction_rationale`)
+with a `model_validator` that rejects any digit — numbers belong in
+`discrepancies` and `proposed_correction`, prose is for *why*. The
+agent learns to name the quantity ("calories look low versus USDA
+Foundation") instead of paraphrasing values badly ("calories differ
+by roughly 30").
+
+Every tool call is recorded in `trace` with a `result_payload` when the
+return value is auditable data (a full `NutritionReference`). The
+judge uses those payloads to verify `proposed_correction` values
+against the record the agent actually saw.
 
 ## 6. Reliability
 
 - `httpx.AsyncClient` with explicit 10s timeout, connect+read.
-- `tenacity` retry on 429/5xx/timeouts: 3 attempts, jittered exponential.
-- On-disk cache (SQLite, keyed on `(source, query_hash)`) for all external
-  lookups. Reproducible reruns, no API hammering, fast tests.
+- `tenacity` retry on 429/5xx/timeouts: 3 attempts, jittered exponential,
+  `Retry-After` honoured when the server sends one.
 - `asyncio.Semaphore(MAX_CONCURRENT_VERIFICATIONS)` so a 50-item file
-  doesn't open 50 parallel USDA sessions.
+  doesn't open 50 parallel USDA sessions; per-client semaphore on OFF
+  so it stays polite regardless of the global concurrency.
 - `asyncio.gather(..., return_exceptions=True)` — one bad item never kills
   the batch.
 - `temperature=0`, model deployment recorded in report metadata.
+- **No on-disk cache.** Earlier drafts had a SQLite response cache; it
+  was removed once the flake-rate on USDA and OFF dropped to acceptable
+  levels with tenacity + semaphores. A cache is easy to add back if
+  evaluator throughput becomes a problem, but it had started hiding
+  real regressions in the judge/golden pipeline and the cost of an
+  uncached run against the 11-item sample is trivial.
 
 ## 7. Unit handling
 
@@ -198,11 +243,22 @@ Two layers, both cheap, both shipped:
    the agent's freedom.
 2. **LLM-as-judge** (`eval/judge.py`, exposed as
    `uv run snaq-verify judge outputs/report.json`) — a *different*
-   prompt (and, via `AZURE_OPENAI_JUDGE_DEPLOYMENT`, ideally a different
-   model) re-reads each item's `reasoning`, `sources`, and tool `trace`
-   and returns a typed `JudgeVerdict{grounded, concerns,
-   judge_confidence, summary}`. Disagreements between the verifier and
-   the judge are the review queue.
+   prompt (and, via `AZURE_OPENAI_JUDGE_DEPLOYMENT`, ideally a
+   different model family) re-reads each item's structured
+   `reasoning`, `sources`, and tool `trace` (including the structured
+   `result_payload` on each lookup) and returns a typed
+   `JudgeVerdict{grounded, concerns: list[JudgeConcern], judge_confidence,
+   summary}`. Concerns are typed: `JudgeConcern.kind` is an 8-value
+   enum (`wrong_reference`, `correction_provenance`, `unit_mismatch`,
+   `missing_citation`, `paraphrase`, `rubric_violation`,
+   `variance_reasoning`, `nitpick`). Disagreements between the
+   verifier and the judge are the review queue.
+3. **Aggregate metrics** (`eval/metrics.py`, written to
+   `outputs/metrics.json`) — `concern_kind_counts` bucketed over all
+   items plus a combined `grounded_success_rate` (item passes the
+   golden set **and** the judge marks it grounded). Individual numbers
+   move between runs due to LLM non-determinism; bucket shape is the
+   stable signal to track run over run.
 
 ## 10. Productization note (goes in README)
 
