@@ -26,7 +26,11 @@ from snaq_verify.clients._retry import parse_retry_after
 from snaq_verify.logic.constants import (
     EXTERNAL_HTTP_TIMEOUT_S,
     HTTP_RETRY_ATTEMPTS,
+    KCAL_PER_G_CARB,
+    KCAL_PER_G_FAT,
+    KCAL_PER_G_PROTEIN,
     RETRY_AFTER_CAP_S,
+    USDA_RELEVANCE_MIN_JACCARD,
 )
 from snaq_verify.models import (
     NutritionPer100g,
@@ -49,6 +53,18 @@ _NUTRIENT_IDS: dict[str, int] = {
     "fiber_g": 1079,
     "sodium_mg": 1093,
 }
+
+# Energy (kJ); used as a fallback when the kcal nutrient (1008) is missing.
+_NUTRIENT_ID_ENERGY_KJ: int = 1062
+_KJ_PER_KCAL: float = 4.184
+
+# Tokens ignored when computing query/match relevance.
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "and", "or", "of", "in", "with", "without",
+        "raw", "cooked", "fresh", "whole", "ns",
+    }
+)
 
 
 class _RetryableHTTPError(Exception):
@@ -104,7 +120,13 @@ class USDAClient:
         query: str,
         data_type: Literal["Foundation", "SR Legacy", "Branded"] = "Foundation",
     ) -> NutritionReference | None:
-        """Search FDC by name, returning the top normalized match or ``None``."""
+        """Search FDC by name, returning the top normalized match or ``None``.
+
+        Applies a relevance gate: if the top result's description doesn't
+        share enough non-stopword tokens with the query, it's treated as a
+        miss. FDC's search is eager and will happily return "Crackers" for
+        "Whole Milk"; we'd rather be inconclusive than wrong.
+        """
         response = await self._request(
             "GET",
             "/foods/search",
@@ -121,7 +143,49 @@ class USDAClient:
         foods = payload.get("foods") or []
         if not foods:
             return None
-        return _normalize_fdc_food(foods[0], data_type)
+        food = foods[0]
+        description = food.get("description") or food.get("lowercaseDescription") or ""
+        if _relevance(query, description) < USDA_RELEVANCE_MIN_JACCARD:
+            return None
+        return _normalize_fdc_food(food, data_type)
+
+
+def _tokenize(text: str) -> set[str]:
+    """Lowercase, split on non-alpha, drop stopwords and single chars."""
+    out: set[str] = set()
+    current = []
+    for ch in text.lower():
+        if ch.isalpha():
+            current.append(ch)
+        else:
+            if current:
+                tok = "".join(current)
+                if len(tok) > 1 and tok not in _STOPWORDS:
+                    out.add(tok)
+                current = []
+    if current:
+        tok = "".join(current)
+        if len(tok) > 1 and tok not in _STOPWORDS:
+            out.add(tok)
+    return out
+
+
+def _relevance(query: str, match_name: str) -> float:
+    """Fraction of query tokens present in match tokens (recall).
+
+    Jaccard penalises the common case where the match description is
+    longer than the query (e.g. "chicken" vs "chicken, broiler..."),
+    even when every query word is present. Recall is the right metric
+    here: we want to filter out matches that fail to cover the query,
+    not matches that add detail.
+    """
+    q = _tokenize(query)
+    m = _tokenize(match_name)
+    if not q:
+        return 1.0
+    if not m:
+        return 0.0
+    return len(q & m) / len(q)
 
 
 def _nutrient_value(food: dict[str, Any], nutrient_id: int) -> float | None:
@@ -148,12 +212,31 @@ def _normalize_fdc_food(food: dict[str, Any], data_type: USDADataType) -> Nutrit
     """Convert an FDC ``food`` object to a :class:`NutritionReference`.
 
     FDC values are already per 100 g for Foundation / SR Legacy.
+    If the kcal nutrient (1008) is missing we fall back to kJ (1062)
+    converted via 1 kcal = 4.184 kJ, then to an Atwater-computed estimate
+    from the macros. ``match_notes`` records which fallback was used.
     """
     values = {field: _nutrient_value(food, nid) for field, nid in _NUTRIENT_IDS.items()}
-    # Required fields default to 0 when the record omits them.
-    for required in ("calories_kcal", "protein_g", "fat_g", "carbohydrates_g"):
+    # Required macros default to 0 when the record omits them.
+    for required in ("protein_g", "fat_g", "carbohydrates_g"):
         if values[required] is None:
             values[required] = 0.0
+
+    kcal_note: str | None = None
+    if values["calories_kcal"] is None:
+        kj = _nutrient_value(food, _NUTRIENT_ID_ENERGY_KJ)
+        if kj is not None:
+            values["calories_kcal"] = round(kj / _KJ_PER_KCAL, 2)
+            kcal_note = "kcal derived from kJ (nutrient 1062)"
+        else:
+            values["calories_kcal"] = round(
+                values["protein_g"] * KCAL_PER_G_PROTEIN
+                + values["carbohydrates_g"] * KCAL_PER_G_CARB
+                + values["fat_g"] * KCAL_PER_G_FAT,
+                2,
+            )
+            kcal_note = "kcal derived from Atwater 4/4/9 (no energy field in record)"
+
     nutrition = NutritionPer100g(**values)  # type: ignore[arg-type]
 
     fdc_id = str(food.get("fdcId", ""))
@@ -168,5 +251,5 @@ def _normalize_fdc_food(food: dict[str, Any], data_type: USDADataType) -> Nutrit
         nutrition=nutrition,
         citation=citation,
         match_name=food.get("description") or food.get("lowercaseDescription") or "",
-        match_notes=None,
+        match_notes=kcal_note,
     )

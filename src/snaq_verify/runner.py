@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from snaq_verify.agent import INSTRUCTIONS, Deps, build_agent
 from snaq_verify.cache import ResponseCache
+from snaq_verify.clients.ciqual import CIQUALClient
 from snaq_verify.clients.openfoodfacts import OpenFoodFactsClient
 from snaq_verify.clients.usda import USDAClient
 from snaq_verify.config import Settings
@@ -85,6 +86,7 @@ async def run_verification(
         USDAClient(settings.usda_api_key) as usda,
         OpenFoodFactsClient() as off,
     ):
+        ciqual = CIQUALClient()
         sem = asyncio.Semaphore(concurrency)
         total = len(items)
         completed = 0
@@ -93,7 +95,7 @@ async def run_verification(
         async def verify_one(item: FoodItem) -> tuple[VerificationResult, list[ToolCall]]:
             nonlocal completed
             async with sem:
-                deps = Deps(usda=usda, off=off, cache=cache)
+                deps = Deps(usda=usda, off=off, ciqual=ciqual, cache=cache)
                 prompt = _format_prompt(item)
                 t0 = time.perf_counter()
                 try:

@@ -36,8 +36,12 @@ def verify(
     ] = Path("outputs"),
     formats: Annotated[
         str,
-        typer.Option("--format", "-f", help="Comma-separated report formats."),
-    ] = "json,md,html",
+        typer.Option(
+            "--format",
+            "-f",
+            help="Comma-separated report formats (json, md).",
+        ),
+    ] = "json,md",
     apply_corrections: Annotated[
         bool,
         typer.Option(
@@ -90,6 +94,39 @@ def verify(
             verbose=verbose,
         )
     )
+
+
+@app.command()
+def judge(
+    report: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="Path to report.json produced by 'verify'.",
+        ),
+    ],
+    out: Annotated[
+        Path,
+        typer.Option("--out", "-o", help="Output path for judge.json."),
+    ] = Path("outputs/judge.json"),
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", "-c", help="Judge request concurrency."),
+    ] = 3,
+) -> None:
+    """Score an existing report for grounding via a second LLM (LLM-as-judge).
+
+    Reads the JSON report written by ``verify`` and writes a
+    :class:`JudgeVerdict` per item. Set ``AZURE_OPENAI_JUDGE_DEPLOYMENT``
+    to route the judge to a different deployment than the verifier.
+    """
+    import asyncio
+
+    from eval.judge import run_judge
+
+    asyncio.run(run_judge(report_path=report, out_path=out, concurrency=concurrency))
 
 
 if __name__ == "__main__":

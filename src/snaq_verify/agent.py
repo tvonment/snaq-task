@@ -23,9 +23,11 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from snaq_verify.cache import _MISS, ResponseCache
+from snaq_verify.clients.ciqual import CIQUALClient
 from snaq_verify.clients.openfoodfacts import OpenFoodFactsClient
 from snaq_verify.clients.usda import USDAClient
 from snaq_verify.config import Settings
+from snaq_verify.logic.completeness import assess_reference_completeness
 from snaq_verify.logic.discrepancy import calculate_discrepancy
 from snaq_verify.logic.validation import validate_macro_consistency
 from snaq_verify.logic.variance import check_known_variance
@@ -34,6 +36,7 @@ from snaq_verify.models import (
     MacroConsistencyResult,
     NutritionPer100g,
     NutritionReference,
+    ReferenceCompletenessResult,
     ToolCall,
     VarianceInfo,
     VerificationResult,
@@ -46,6 +49,7 @@ class Deps:
 
     usda: USDAClient
     off: OpenFoodFactsClient
+    ciqual: CIQUALClient
     cache: ResponseCache | None
     trace: list[ToolCall] = field(default_factory=list)
 
@@ -62,24 +66,34 @@ Tool routing:
   back to lookup_usda_by_name with data_type="Branded".
 - No barcode (generic food): call lookup_usda_by_name with
   data_type="Foundation" first, then "SR Legacy" if Foundation returns
-  nothing. Avoid the "Branded" dataset for generic foods.
+  nothing. Also call lookup_ciqual_by_name for a second authoritative
+  reference. Avoid the "Branded" dataset for generic foods.
 - Always call check_known_variance_tool before finalizing the status.
   When the item matches a variance rule and the only discrepancies are
   on its variable_fields, set status to HIGH_VARIANCE instead of
   DISCREPANCY.
 - Always call validate_macro_consistency_tool on the provided nutrition.
-- When a reference is available, call calculate_discrepancy_tool to
-  compare provided and reference.
+- For every reference you use, call assess_reference_completeness_tool
+  and calculate_discrepancy_tool. Do not do arithmetic yourself -- if a
+  reference looks incomplete, treat it as incomplete rather than
+  back-filling values.
 
 Confidence scoring:
-- 1.0 when two sources agree within tolerance.
-- 0.8 for a single USDA Foundation or SR Legacy match.
-- 0.6 for a single branded source with complete macros.
+- 1.0 when two independent sources (USDA and CIQUAL, or USDA and OFF)
+  agree within tolerance.
+- 0.8 for a single USDA Foundation / SR Legacy or CIQUAL match on a
+  complete reference.
+- 0.6 for a single branded source with complete macros, OR any
+  single-source match whose reference is flagged incomplete by
+  assess_reference_completeness_tool. Cap confidence at 0.6 in that
+  case regardless of the source type.
 - 0.4 for partial data or a high-variance catalogue hit.
 - 0.0 when no usable source is found.
 
 Propose a correction only when status is DISCREPANCY and confidence is
-at least 0.8. Keep the reasoning field to one to three short sentences.
+at least 0.8. Never invent a value -- copy the reference's numbers
+verbatim, leaving fields null when the reference has no data. Keep the
+reasoning field to one to three short sentences.
 """
 
 
@@ -149,6 +163,18 @@ async def _cached_off_barcode(deps: Deps, barcode: str) -> NutritionReference | 
     result = await deps.off.lookup_by_barcode(barcode)
     if deps.cache is not None:
         deps.cache.set("OpenFoodFacts", cache_key, result)
+    return result
+
+
+def _cached_ciqual_search(deps: Deps, query: str) -> NutritionReference | None:
+    cache_key = f"search:{query.lower()}"
+    if deps.cache is not None:
+        cached = deps.cache.get("CIQUAL", cache_key)
+        if cached is not _MISS:
+            return cached  # type: ignore[return-value]
+    result = deps.ciqual.search(query)
+    if deps.cache is not None:
+        deps.cache.set("CIQUAL", cache_key, result)
     return result
 
 
@@ -240,6 +266,43 @@ def _register_tools(agent: Agent[Deps, VerificationResult]) -> None:
             "check_known_variance",
             {"name": name, "category": category},
             f"match={result.match_key!r}" if result else "no match",
+            t0,
+        )
+        return result
+
+    @agent.tool
+    def assess_reference_completeness_tool(
+        ctx: RunContext[Deps], reference: NutritionPer100g
+    ) -> ReferenceCompletenessResult:
+        """Report whether a reference record is too incomplete to trust fully."""
+        t0 = time.perf_counter()
+        result = assess_reference_completeness(reference)
+        _trace(
+            ctx.deps,
+            "assess_reference_completeness",
+            {"reference": reference.model_dump()},
+            f"incomplete={result.is_incomplete} missing={result.missing_fields}",
+            t0,
+        )
+        return result
+
+    @agent.tool
+    def lookup_ciqual_by_name(
+        ctx: RunContext[Deps], name: str, category: str
+    ) -> NutritionReference | None:
+        """Look up nutrition data in the bundled CIQUAL (ANSES) subset.
+
+        CIQUAL is the French government food composition table. The agent
+        should call this alongside USDA for generic foods; two-source
+        agreement is the only path to confidence 1.0.
+        """
+        t0 = time.perf_counter()
+        result = _cached_ciqual_search(ctx.deps, name)
+        _trace(
+            ctx.deps,
+            "lookup_ciqual_by_name",
+            {"name": name, "category": category},
+            f"match={result.match_name!r}" if result else "no match",
             t0,
         )
         return result

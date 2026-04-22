@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from email.utils import parsedate_to_datetime
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 
 def parse_retry_after(value: str | None, *, cap_s: float) -> float | None:

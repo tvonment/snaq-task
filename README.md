@@ -1,13 +1,22 @@
 # SNAQ Nutrition Verification Agent
 
 A command-line agent that verifies the nutrition data in `food_items.json`
-against authoritative sources (USDA FoodData Central, Open Food Facts),
-flags discrepancies, and — when confident — proposes corrections.
+against authoritative sources (USDA FoodData Central, Open Food Facts,
+ANSES CIQUAL), flags discrepancies, and — when confident — proposes
+corrections.
 
 **Philosophy:** the LLM decides *which* source to trust and *why*; pure
 Python does the arithmetic. The hard parts are unit-testable.
 
-See [DESIGN.md](DESIGN.md) for the full rationale.
+## Docs
+
+- [DESIGN.md](DESIGN.md) — architecture, scope decisions, confidence rubric.
+- [NARRATIVE.md](NARRATIVE.md) — how the build actually went, including
+  a critical self-review of what shipped.
+- [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md) — attribution for the
+  bundled CIQUAL subset.
+- [eval/golden.py](eval/golden.py) / [eval/judge.py](eval/judge.py) —
+  the "verify the verifier" layer.
 
 ---
 
@@ -28,21 +37,25 @@ cp .env.example .env
 #   USDA_API_KEY              (free, https://fdc.nal.usda.gov/api-key-signup)
 
 # 3. Run
-uv run snaq-verify food_items.json --out outputs/
+uv run snaq-verify verify food_items.json --out outputs/
 ```
 
-Reports are written to `outputs/report.{json,md,html}`.
+Reports are written to `outputs/report.{json,md}`.
 
 ### CLI
 
 ```
-uv run snaq-verify food_items.json \
+uv run snaq-verify verify food_items.json \
     [--out outputs/] \
-    [--format json,md,html] \
+    [--format json,md] \
     [--apply-corrections --min-confidence 0.8] \
     [--no-cache] \
     [--concurrency 5] \
     [-v | -vv]
+
+uv run snaq-verify judge outputs/report.json \
+    [--out outputs/judge.json] \
+    [--concurrency 3]
 ```
 
 `--apply-corrections` writes `outputs/food_items.corrected.json` with every
@@ -74,14 +87,18 @@ runner  (asyncio.gather + Semaphore)
 pydantic-ai Agent  (Azure AI Foundry, gpt-5-mini)
     ↓ typed tool calls
 ┌─────────────────────────────────────────────────────┐
-│  lookup_usda_by_name         (httpx + tenacity)     │
-│  lookup_off_by_barcode       (httpx + tenacity)     │
-│  validate_macro_consistency  (pure)                 │
-│  calculate_discrepancy       (pure)                 │
-│  check_known_variance        (pure)                 │
+│  lookup_usda_by_name            (httpx + tenacity)  │
+│  lookup_off_by_barcode          (httpx + tenacity)  │
+│  lookup_ciqual_by_name          (bundled subset)    │
+│  validate_macro_consistency     (pure)              │
+│  calculate_discrepancy          (pure)              │
+│  assess_reference_completeness  (pure)              │
+│  check_known_variance           (pure)              │
 └─────────────────────────────────────────────────────┘
     ↓
-report.{json,md,html}   +   food_items.corrected.json (optional)
+report.{json,md}   +   food_items.corrected.json (optional)
+    ↓ (optional, separate command)
+eval/judge.py  →  outputs/judge.json
 ```
 
 Single Python package, one entry point. No MCP server, no SSE, no
@@ -99,9 +116,11 @@ docker-compose, no frontend.
 | **Typed tool boundaries** | Every tool takes and returns a Pydantic model with `Field(description=...)`. That's the difference between "tool calling works" and "tool calling is reliable." |
 | **Five statuses, not a boolean** | `VERIFIED` / `DISCREPANCY` / `HIGH_VARIANCE` / `INCONCLUSIVE` / `ERROR`. Uncertainty is first-class. |
 | **Explicit confidence rubric** | 0.0 / 0.4 / 0.6 / 0.8 / 1.0 with stated conditions (see [DESIGN.md §4.5](DESIGN.md)). Not vibes. |
-| **Route by item shape** | Barcode → Open Food Facts; generic → USDA Foundation → SR Legacy. Explicitly avoid USDA Branded for generic items (#1 source of wrong matches). |
+| **Route by item shape** | Barcode → Open Food Facts; generic → USDA Foundation → SR Legacy + CIQUAL. Explicitly avoid USDA Branded for generic items (#1 source of wrong matches). |
+| **Relevance gate on USDA search** | FDC search will happily return "Crackers" for "Whole Milk". A small token-recall check between query and match description filters those out; the agent sees `None` instead. |
 | **Known-variance catalogue** | Farmed vs wild salmon, avocado, whole milk fat bands, ground beef: these are *naturally* variable and resolve to `HIGH_VARIANCE`, not `DISCREPANCY`. |
 | **Corrections are conservative** | Only proposed when `confidence >= 0.8` AND exactly one authoritative source was used. Matches how a human nutritionist would behave. |
+| **Confidence caps for incomplete references** | When a matched source record has zero kcal or is missing two+ core macros, confidence is capped at 0.6 no matter the source type. Without this, a USDA Foundation record missing `Energy (kcal, 1008)` would still score 0.8 — even though the agent then has to back-compute the value itself. |
 | **SQLite cache + tenacity + semaphore** | Reproducible reruns, no API hammering, one bad item can't kill the batch. `asyncio.gather(..., return_exceptions=True)`. |
 
 ---
@@ -134,19 +153,30 @@ deployment's content filter.
 
 ## Output
 
-The agent writes three reports per run:
+The agent writes two reports per run:
 
 - **`report.json`** — machine-readable, includes every tool call
-  (name, args, result summary, latency) per item.
+  (name, args, result summary, latency) per item. Consumed by the
+  judge and golden-set eval.
 - **`report.md`** — human summary table + details section per
   non-`VERIFIED` item.
-- **`report.html`** — single self-contained HTML file (no external CSS/JS),
-  suitable for sharing or archiving.
 
 With `--apply-corrections`, also:
 
 - **`food_items.corrected.json`** — originals with high-confidence
   corrections merged in.
+
+### Sample output
+
+```markdown
+| # | Item | Status | Confidence |
+|---|------|--------|------------|
+| 1 | `chicken-breast-raw` — Chicken Breast, Skinless, Raw | ⚠️ DISCREPANCY | 0.80 |
+| 9 | `salmon-atlantic-farmed-raw` — Salmon, Atlantic, Farmed, Raw | 〰️ HIGH_VARIANCE | 0.40 |
+| 11 | `white-bread` — White Bread | ⚠️ DISCREPANCY | 0.80 |
+```
+
+Full example under [outputs/report.md](outputs/report.md).
 
 ---
 
@@ -154,38 +184,50 @@ With `--apply-corrections`, also:
 
 ```
 src/snaq_verify/
-  cli.py           Typer entrypoint
+  cli.py           Typer entrypoint (verify + judge subcommands)
   runner.py        gather + semaphore orchestration
   agent.py         pydantic-ai Agent + tool registrations + system prompt
   models.py        All shared Pydantic models
   cache.py         SQLite response cache
-  report.py        JSON + Markdown + HTML writers
+  report.py        JSON + Markdown writers
   config.py        Env-loaded settings
   clients/
-    usda.py            USDA FoodData Central
+    usda.py            USDA FoodData Central (relevance gate + kcal fallback)
     openfoodfacts.py
+    ciqual.py          ANSES CIQUAL (bundled subset)
   logic/
     validation.py      Pure: macro consistency (protein*4 + carbs*4 + fat*9 ≈ kcal)
     discrepancy.py     Pure: per-field deltas and threshold flags
     variance.py        Pure: known-variance catalogue
+    completeness.py    Pure: is the reference record complete enough to trust?
     constants.py       Named tolerances (no magic numbers)
 
-tests/             pytest + pytest-asyncio + respx — 39 tests, no network
+eval/
+  golden.py        Structural expectations per item; exit non-zero on regression
+  judge.py         LLM-as-judge; re-reads report.json for grounding
+
+data/
+  ciqual_subset.json  Bundled CIQUAL subset (attribution: data/CIQUAL_LICENSE.md)
+
+tests/             pytest + pytest-asyncio + respx — no network
 ```
 
 ---
 
 ## What I would do differently with more time
 
-1. **Live eval / LLM-as-judge.** [DESIGN.md §9](DESIGN.md) outlines a
-   two-layer eval: a golden set of expected statuses per sample item,
-   plus an LLM-as-judge (different prompt, ideally different model)
-   that reads the agent's `reasoning` + `sources` and scores grounding.
-   Skeleton directory exists (`eval/`) but isn't implemented.
-2. **A second authoritative source beyond USDA + OFF.** CIQUAL (French
-   ANSES) or CoFID (UK) would let confidence `1.0` actually reflect
-   two-source agreement more often. Today most generic items max at
-   `0.8` because there's only one authority.
+1. **A richer LLM-as-judge.** A minimal judge ships in
+   [eval/judge.py](eval/judge.py) and is exposed via
+   `uv run snaq-verify judge outputs/report.json`. With more time it
+   would run against a different deployment by default (set
+   `AZURE_OPENAI_JUDGE_DEPLOYMENT`), aggregate grounded-rate over
+   historical runs, and feed disagreements into a human review queue.
+2. **Full CIQUAL ingest.** The repo bundles a curated English-labelled
+   subset under [data/ciqual_subset.json](data/ciqual_subset.json) with
+   attribution in [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md).
+   Good enough to demonstrate two-source agreement for the sample
+   items; a real integration would ingest the full ANSES dataset and
+   build a proper name/alias index (fuzzy matching, synonyms).
 3. **Better unit handling for liquids.** Density table is inlined; a
    real integration wants per-category density data and a clearer
    `unit_mismatch` reporting convention (see [DESIGN.md §7](DESIGN.md)).
@@ -221,8 +263,8 @@ residential IP or a non-blocked host; your `USDA_API_KEY` is fine.
 
 | Home-task asks for | Produced by |
 |---|---|
-| Working code, minimal setup | `uv sync && uv run snaq-verify food_items.json` |
+| Working code, minimal setup | `uv sync && uv run snaq-verify verify food_items.json` |
 | README (setup, decisions, future work) | this file |
 | Design rationale | [DESIGN.md](DESIGN.md) |
-| Output on `food_items.json` | `outputs/report.{json,md,html}` |
+| Output on `food_items.json` | `outputs/report.{json,md}` |
 | AI conversation log | [NARRATIVE.md](NARRATIVE.md) + linked Claude share |

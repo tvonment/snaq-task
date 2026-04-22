@@ -79,7 +79,7 @@ class FoodItem(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-SourceName = Literal["USDA", "OpenFoodFacts"]
+SourceName = Literal["USDA", "OpenFoodFacts", "CIQUAL"]
 USDADataType = Literal["Foundation", "SR Legacy", "Branded", "Survey (FNDDS)"]
 
 
@@ -173,6 +173,23 @@ class VarianceInfo(BaseModel):
     )
 
 
+class ReferenceCompletenessResult(BaseModel):
+    """Output of :func:`logic.completeness.assess_reference_completeness`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_incomplete: bool = Field(
+        description="True when the reference is missing core fields "
+        "and confidence should be capped."
+    )
+    missing_fields: list[str] = Field(
+        description="Names of fields that were None or zero."
+    )
+    reason: str | None = Field(
+        default=None, description="Short human-readable reason if incomplete."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Verification result (agent output)
 # ---------------------------------------------------------------------------
@@ -221,3 +238,27 @@ class VerificationResult(BaseModel):
     error: str | None = Field(
         default=None, description="Populated only when status=ERROR."
     )
+
+
+# ---------------------------------------------------------------------------
+# Judge (eval) output
+# ---------------------------------------------------------------------------
+
+
+class JudgeVerdict(BaseModel):
+    """One item's judgement from the LLM-as-judge eval layer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str = Field(description="Matches VerificationResult.item_id.")
+    grounded: bool = Field(
+        description="True when the reasoning is supported by the listed sources."
+    )
+    concerns: list[str] = Field(
+        default_factory=list,
+        description="Specific issues: unsupported claims, missing citations, math errors.",
+    )
+    judge_confidence: float = Field(
+        ge=0.0, le=1.0, description="How confident the judge is in its verdict."
+    )
+    summary: str = Field(description="One-sentence assessment.")

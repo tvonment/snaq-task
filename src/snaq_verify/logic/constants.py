@@ -23,12 +23,21 @@ CALORIES_TOLERANCE: float = 0.10  # ±10 %
 MACRO_TOLERANCE: float = 0.15     # ±15 % for protein / carbs / fat / sugar / fiber
 SODIUM_TOLERANCE: float = 0.25    # ±25 % — sodium varies a lot by preparation
 
+# Minimum Jaccard token overlap between a search query and a USDA match
+# description for the match to be considered relevant. Below this,
+# USDAClient.search treats the hit as a miss.
+USDA_RELEVANCE_MIN_JACCARD: float = 0.2
+
 # Confidence rubric (see DESIGN.md §4.5).
 CONFIDENCE_TWO_SOURCES_AGREE: float = 1.0
 CONFIDENCE_AUTHORITATIVE_SINGLE: float = 0.8
 CONFIDENCE_BRANDED_SINGLE: float = 0.6
 CONFIDENCE_PARTIAL_OR_VARIANCE: float = 0.4
 CONFIDENCE_NONE: float = 0.0
+
+# When the matched reference is incomplete (zero kcal, or two+ core macros
+# missing) we cap confidence here no matter how authoritative the source is.
+CONFIDENCE_INCOMPLETE_REFERENCE_CAP: float = 0.6
 
 # Minimum confidence at which a correction may be auto-applied.
 DEFAULT_MIN_CORRECTION_CONFIDENCE: float = 0.8

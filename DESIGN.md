@@ -48,9 +48,11 @@ food_items.json
 │ Tools                                                   │
 │  lookup_usda_by_name(name, category, data_type)         │
 │  lookup_off_by_barcode(barcode)                         │
-│  validate_macro_consistency(nutrition)      [pure]      │
-│  calculate_discrepancy(provided, reference) [pure]      │
-│  check_known_variance(name, category)       [pure]      │
+│  lookup_ciqual_by_name(name, category)        [local]   │
+│  validate_macro_consistency(nutrition)        [pure]    │
+│  calculate_discrepancy(provided, reference)   [pure]    │
+│  assess_reference_completeness(reference)     [pure]    │
+│  check_known_variance(name, category)         [pure]    │
 └─────────────────────────────────────────────────────────┘
       │
       ▼
@@ -58,7 +60,6 @@ food_items.json
 │ report.py                                               │
 │   • report.json   (machine-readable, full trace)        │
 │   • report.md     (human summary, status table)         │
-│   • report.html   (optional, self-contained static)     │
 │   • food_items.corrected.json  (--apply-corrections)    │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -81,12 +82,22 @@ between "tool calling works" and "tool calling is reliable."
 ### 4.3 Route by item shape
 
 - **Branded + barcode** → Open Food Facts first; USDA Branded as fallback.
-- **Generic (no barcode)** → USDA `dataType=Foundation,SR Legacy`.
-  Explicitly avoid Branded dataset for generic queries — it's the #1
-  source of wrong matches in FoodData Central.
+- **Generic (no barcode)** → USDA `dataType=Foundation,SR Legacy` **plus**
+  CIQUAL (ANSES) for a second authoritative reference. Two-source
+  agreement is the only path to confidence 1.0. Explicitly avoid USDA
+  Branded for generic queries — it's the #1 source of wrong matches in
+  FoodData Central.
 - **Known high-variance** (farmed vs wild salmon, "avocado, raw" portion
   vs per-100g semantics, etc.) → return `HIGH_VARIANCE` with reason, not
   `DISCREPANCY`.
+
+### 4.3a Match-relevance guard
+
+FDC's `/foods/search` is eager; a one-word query like "milk" can return
+"Crackers, saltines" as the top hit. A tiny token-recall check compares
+query tokens (stop-words removed) against the match description, and
+returns `None` below a minimum threshold. The agent sees a clean miss
+rather than a wrong reference it then has to argue against.
 
 ### 4.4 Uncertainty is first-class
 
@@ -112,6 +123,12 @@ Five statuses, not a boolean:
 
 Tolerances (per 100 g): ±10% for calories, ±15% for individual macros,
 ±25% for sodium. Declared constants, not magic numbers.
+
+One extra rule beyond the table above: if the matched reference is
+incomplete (zero kcal, or missing two-plus core macros — FDC Foundation
+records sometimes lack `Energy (kcal, 1008)` and ship only kJ), confidence
+is capped at 0.6 regardless of source type. This prevents the agent from
+having to back-compute kcal itself and stamping the result 0.8.
 
 ### 4.6 Corrections
 
@@ -171,16 +188,21 @@ Priority order matches the value of catching regressions:
 
 ## 9. Bonus: verifying the verifier
 
-Two layers, both cheap:
+Two layers, both cheap, both shipped:
 
-1. **Golden-set eval** (`eval/golden.py`) — runs the agent against the
-   sample file with caching on, asserts each item's status and that
-   macro deltas fall in expected bands. Fails CI if behaviour regresses.
-2. **LLM-as-judge** (`eval/judge.py`) — a *different* prompt (and,
-   ideally, a different model) re-reads the agent's `reasoning` and
-   `sources` and scores it for factual grounding. Disagreements between
-   agent and judge are flagged for human review. This is the pattern the
-   brief's bonus hints at.
+1. **Golden-set checker** (`eval/golden.py`) — reads the JSON report and
+   asserts each item's status is in an allowed set with a minimum
+   confidence. Run via `uv run python -m eval.golden outputs/report.json`;
+   exits non-zero on regression. Deliberately thin — it catches the gross
+   cases (farmed salmon must be `HIGH_VARIANCE`) without over-specifying
+   the agent's freedom.
+2. **LLM-as-judge** (`eval/judge.py`, exposed as
+   `uv run snaq-verify judge outputs/report.json`) — a *different*
+   prompt (and, via `AZURE_OPENAI_JUDGE_DEPLOYMENT`, ideally a different
+   model) re-reads each item's `reasoning`, `sources`, and tool `trace`
+   and returns a typed `JudgeVerdict{grounded, concerns,
+   judge_confidence, summary}`. Disagreements between the verifier and
+   the judge are the review queue.
 
 ## 10. Productization note (goes in README)
 
@@ -196,7 +218,7 @@ ship `--apply-corrections --min-confidence <x>` which emits a corrected
 
 | Brief asks for | Produced by |
 |---|---|
-| Working code, minimal setup | `uv run snaq-verify food_items.json` |
+| Working code, minimal setup | `uv run snaq-verify verify food_items.json` |
 | README (setup, decisions, future work) | `README.md` |
-| Output on `food_items.json` | `outputs/report.{json,md,html}` |
+| Output on `food_items.json` | `outputs/report.{json,md}` |
 | AI conversation log | `ai-session/` transcript export |

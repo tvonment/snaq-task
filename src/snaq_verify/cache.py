@@ -18,7 +18,7 @@ from typing import Literal
 
 from snaq_verify.models import NutritionReference
 
-Source = Literal["USDA", "OpenFoodFacts"]
+Source = Literal["USDA", "OpenFoodFacts", "CIQUAL"]
 
 _NONE_SENTINEL = "__NONE__"
 

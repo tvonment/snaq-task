@@ -203,3 +203,57 @@ The two AI conversations that produced this repo are:
 2. The Copilot session in this workspace, which did the actual
    implementation, the architecture rewrite, and all the debugging
    described above.
+
+## 9. Critical self-review (after shipping)
+
+Before calling it done, I had Copilot re-audit the repo from scratch
+against the brief \u2014 no assumption of correctness, looking for things
+worth fixing. Three findings were worth acting on, and one was worth
+explicitly deferring.
+
+**Finding 1 \u2014 USDA was sometimes sending back kcal = 0.**
+Some FDC Foundation records ship energy only as kJ (nutrient 1062), not
+kcal (nutrient 1008). The original normaliser treated "kcal nutrient
+absent" as zero. That cascades: the discrepancy tool then flags a real
+food as -100% calories. Fix was a small fallback chain in
+`_normalize_fdc_food`: prefer 1008, else 1062 / 4.184, else Atwater
+(`4P + 4C + 9F`). The `match_notes` field records which path was used,
+so a reviewer can see when the reference value was derived.
+
+**Finding 2 \u2014 The confidence rubric didn't punish incomplete matches.**
+A USDA Foundation hit with a real kcal value and a USDA Foundation hit
+missing half its macros were both scoring 0.8. Added a pure
+`assess_reference_completeness` tool and a rule: if the reference is
+incomplete, confidence is capped at 0.6 regardless of source type.
+This is the kind of rule you want in pure Python, not in the prompt.
+
+**Finding 3 \u2014 Single authoritative source meant 1.0 confidence was
+nearly unreachable.** The brief explicitly hints at this: "multiple
+sources of authoritative data" as a direction. I added a local
+[ANSES CIQUAL](https://ciqual.anses.fr/) subset (11 foods, hand-curated
+English aliases, attribution in `data/CIQUAL_LICENSE.md`) and a
+`lookup_ciqual_by_name` tool. For generic items the agent can now get
+two-source agreement and score 1.0 legitimately. Full CIQUAL ingest is
+deferred \u2014 the subset is enough to demonstrate the pattern on the
+sample items without shipping 3000 rows of French-labelled data.
+
+**Bonus \u2014 LLM-as-judge, shipped thin.** The brief lists this as a
+bonus and I had originally deferred it. On review, it felt wrong to
+claim the verifier was trustworthy without any second-order check, so
+I added the minimal form: a second `pydantic-ai` Agent with its own
+system prompt, a typed `JudgeVerdict`, an `AZURE_OPENAI_JUDGE_DEPLOYMENT`
+env var so it can run on a different model, and a `snaq-verify judge`
+subcommand that re-reads `report.json` and writes `judge.json`. Paired
+with a tiny `eval/golden.py` structural checker (exits non-zero on
+regression), that's the start of a real eval loop without pretending
+it's a full one.
+
+**Deliberately not done.** HTML report was removed \u2014 the JSON and
+Markdown reports carry everything, and the HTML was a third format to
+keep in sync with no real consumer. The Jinja2 dependency went with it.
+
+The point of this section is not "look what I caught." It's that the
+brief asks about *reasonableness of heuristics* and *the hard parts of
+this task*, and you can't answer those honestly without a critical
+second pass. The first pass got the architecture right; the second
+pass found the bugs.
