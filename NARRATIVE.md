@@ -133,7 +133,50 @@ documented in the README.
   with jitter on 429/5xx, cache with a `_MISS` sentinel distinct from
   a cached `None`. The AI proposed all of these; I just had to approve.
 
-## 6. What I would do differently if I ran it again
+## 6. Polish pass: logs and OFF resilience
+
+After the first full run produced a clean report, two real annoyances
+remained. The console was unreadable — every HTTP call logged through
+`httpx` at INFO level, so a 10-item run was 80+ lines of `POST ...
+"HTTP/1.1 200 OK"` with no sense of progress. And Open Food Facts had
+started returning sporadic 429s under the default concurrency.
+
+I asked for "something more readable while it's executing" plus "waits
+and retries for OFF". Copilot came back with a plan before touching
+code, which I liked: silence `httpx`/`httpcore`/`openai`/`pydantic_ai`
+to WARNING, emit one concise line per completed item (`[3/10] VERIFIED
+White Bread  conf=0.80  tools=4  2.1s`), and harden the OFF client with
+more attempts (3 → 5), a wider backoff window (0.5–4s → 1–30s), a
+per-client `asyncio.Semaphore(2)` so OFF stays polite even if global
+`--concurrency` is bumped, and — the actually-correct-behaviour bit —
+honoring the server's `Retry-After` header when present. The same
+header handling went into the USDA client for symmetry.
+
+Two small decisions worth naming:
+
+- **No `rich`, no progress bar.** Plain log lines work in CI, in pipes,
+  and in `tee`; a live TTY bar doesn't. One dependency not added.
+- **Per-host semaphore on the client instance, not global.** The
+  politeness policy for OFF belongs to the OFF client, not the runner.
+  Swapping the client out later shouldn't silently drop the rate limit.
+
+A follow-up turn added `-v` / `-vv` for the days you actually want the
+raw HTTP firehose back: `-v` promotes `snaq_verify` to DEBUG, `-vv`
+additionally re-enables the third-party INFO loggers. Default stays
+quiet.
+
+One new test (`test_barcode_lookup_honors_retry_after_on_429`) patches
+`asyncio.sleep` and asserts the 2-second hint is honoured; the full
+suite is now 39 green.
+
+Lesson reinforced: the right shape of a change like this is "ask for a
+plan, skim it, approve, then let it run". The plan I got back named the
+right trade-offs (Retry-After cap, no `rich`, per-host vs. global
+semaphore) and explicitly flagged the optional `-v` flag as a
+follow-up question rather than silently including it. That's the
+interaction mode I want from a coding agent.
+
+## 7. What I would do differently if I ran it again
 
 - Write the golden-set eval (`eval/golden.py` + `eval/judge.py`, the
   bonus from the brief) earlier, before the live-run debugging cycle.
@@ -144,7 +187,7 @@ documented in the README.
 - Add a `--dry-run` that exercises the agent against cached fixtures
   only, to demo the full pipeline without any live keys.
 
-## 7. What SNAQ is actually reading here
+## 8. What SNAQ is actually reading here
 
 The README says "read this first, then run the code, then read the
 code." The narrative above is how I'd describe the session to another
