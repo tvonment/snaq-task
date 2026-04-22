@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -41,13 +42,20 @@ _JUDGE_SYSTEM_PROMPT = (
 )
 
 
-def _build_judge_agent(settings: Settings) -> Agent[None, JudgeVerdict]:
-    """Build the judge agent. Uses a separate deployment when configured."""
+def _build_judge_agent(settings: Settings) -> tuple[Agent[None, JudgeVerdict], str]:
+    """Build the judge agent. Returns (agent, deployment_name).
+
+    Uses ``AZURE_OPENAI_JUDGE_DEPLOYMENT`` when set so verifier and judge
+    can run on different models; otherwise falls back to the verifier's
+    deployment. The deployment name is returned so callers can record
+    which model graded a given report.
+    """
     deployment = os.environ.get("AZURE_OPENAI_JUDGE_DEPLOYMENT") or settings.azure_deployment
     base_url = settings.azure_endpoint.rstrip("/") + "/"
     client = AsyncOpenAI(base_url=base_url, api_key=settings.azure_api_key)
     model = OpenAIChatModel(deployment, provider=OpenAIProvider(openai_client=client))
-    return Agent(model=model, output_type=JudgeVerdict, system_prompt=_JUDGE_SYSTEM_PROMPT)
+    agent = Agent(model=model, output_type=JudgeVerdict, system_prompt=_JUDGE_SYSTEM_PROMPT)
+    return agent, deployment
 
 
 async def _judge_one(agent: Agent[None, JudgeVerdict], row: dict) -> JudgeVerdict:
@@ -83,7 +91,7 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
     rows = doc.get("items", [])
     _LOG.info("Judging %d items", len(rows))
 
-    agent = _build_judge_agent(settings)
+    agent, judge_deployment = _build_judge_agent(settings)
     sem = asyncio.Semaphore(concurrency)
 
     async def one(row: dict) -> JudgeVerdict:
@@ -109,10 +117,13 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
             return v
 
     verdicts = await asyncio.gather(*(one(r) for r in rows))
+    generated_at = datetime.now(UTC).isoformat()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
             {
+                "generated_at": generated_at,
+                "judge_deployment": judge_deployment,
                 "report_path": str(report_path),
                 "verdicts": [v.model_dump() for v in verdicts],
             },
@@ -121,7 +132,23 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
         )
     )
     md_path = out_path.with_suffix(".md")
-    md_path.write_text(render_judge_markdown(verdicts, report_path=report_path))
+    md_path.write_text(
+        render_judge_markdown(
+            verdicts,
+            report_path=report_path,
+            generated_at=generated_at,
+            judge_deployment=judge_deployment,
+        )
+    )
+
+    # M5: snapshot judge-verifier agreement alongside the judge output so
+    # every run produces a diffable metrics.json next to report.json.
+    from eval.metrics import compute_metrics, write_metrics
+
+    metrics = compute_metrics(report_path=report_path, judge_path=out_path)
+    metrics_path = out_path.parent / "metrics.json"
+    write_metrics(metrics, metrics_path)
+
     n_grounded = sum(1 for v in verdicts if v.grounded)
     _LOG.info(
         "Judge done: %d/%d grounded -> %s (+ %s)",
@@ -130,16 +157,28 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
         out_path,
         md_path.name,
     )
+    _LOG.info(
+        "Grounded success: %d/%d (%.2f) -> %s",
+        metrics.grounded_success_count,
+        metrics.golden_covered,
+        metrics.grounded_success_rate,
+        metrics_path,
+    )
 
 
 def render_judge_markdown(
-    verdicts: list[JudgeVerdict], *, report_path: Path | None = None
+    verdicts: list[JudgeVerdict],
+    *,
+    report_path: Path | None = None,
+    generated_at: str | None = None,
+    judge_deployment: str | None = None,
 ) -> str:
     """Render a markdown view of the judge verdicts.
 
     Kept next to ``run_judge`` so the two stay in sync; exposed as a
     module-level function so it can be unit-tested without invoking
-    the LLM.
+    the LLM. ``generated_at`` and ``judge_deployment`` are optional so
+    existing callers (and tests) keep working.
     """
     n = len(verdicts)
     n_grounded = sum(1 for v in verdicts if v.grounded)
@@ -148,8 +187,13 @@ def render_judge_markdown(
     lines: list[str] = []
     lines.append("# Judge Report")
     lines.append("")
+    if generated_at is not None:
+        lines.append(f"- Generated: `{generated_at}`")
+    if judge_deployment is not None:
+        lines.append(f"- Judge model: `{judge_deployment}`")
     if report_path is not None:
-        lines.append(f"Scoring: `{report_path}`")
+        lines.append(f"- Scoring: `{report_path}`")
+    if generated_at or judge_deployment or report_path is not None:
         lines.append("")
     lines.append(
         f"**Grounded:** {n_grounded}/{n} "
