@@ -90,8 +90,22 @@ Confidence scoring:
 
 Propose a correction only when status is DISCREPANCY and confidence is
 at least 0.8. Never invent a value -- copy the reference's numbers
-verbatim, leaving fields null when the reference has no data. Keep the
-reasoning field to one to three short sentences.
+verbatim, leaving fields null when the reference has no data.
+
+Reasoning output (VerificationReasoning):
+- routing_decision: one of "barcode_off", "generic_usda",
+  "generic_ciqual", "known_variance", "manual_review".
+- source_choice_rationale: one or two sentences explaining WHY the
+  chosen source is appropriate. Qualitative only.
+- variance_notes: optional short note when HIGH_VARIANCE applies.
+- correction_rationale: optional short note when proposing a correction.
+
+The narrative fields are qualitative by construction. Do not write any
+digits in them (including percentages, counts, kcal, grams, or record
+IDs). Numbers live in the structured tool outputs above -- sources,
+discrepancies, macro_consistency. The report layer composes the human
+sentence from those. If you paraphrase a number into the reasoning,
+the schema will reject the response.
 """
 
 

@@ -15,7 +15,7 @@ from snaq_verify.clients.ciqual import CIQUALClient
 from snaq_verify.clients.openfoodfacts import OpenFoodFactsClient
 from snaq_verify.clients.usda import USDAClient
 from snaq_verify.config import Settings
-from snaq_verify.models import FoodItem, ToolCall, VerificationResult
+from snaq_verify.models import FoodItem, ToolCall, VerificationReasoning, VerificationResult
 from snaq_verify.report import write_reports
 
 _LOG = logging.getLogger("snaq_verify")
@@ -103,7 +103,13 @@ async def run_verification(
                         item_id=item.id,
                         status="ERROR",
                         confidence=0.0,
-                        reasoning="Agent raised an exception; see error field.",
+                        reasoning=VerificationReasoning(
+                            routing_decision="manual_review",
+                            source_choice_rationale=(
+                                "Agent raised an exception before a source "
+                                "could be chosen; see the error field."
+                            ),
+                        ),
                         error=f"{type(exc).__name__}: {exc}",
                     )
                 elapsed = time.perf_counter() - t0

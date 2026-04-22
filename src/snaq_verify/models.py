@@ -7,6 +7,7 @@ same types.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -200,6 +201,87 @@ VerificationStatus = Literal[
 ]
 
 
+RoutingDecision = Literal[
+    "barcode_off",
+    "generic_usda",
+    "generic_ciqual",
+    "known_variance",
+    "manual_review",
+]
+
+
+_DIGIT_RE = re.compile(r"\d")
+
+
+def _reject_digits(value: str | None, field_name: str) -> str | None:
+    """Reject strings containing any digit.
+
+    Reasoning fields are qualitative by construction. Numbers belong to
+    the structured tool outputs (``discrepancies``, ``macro_consistency``,
+    ``sources``); the report layer composes the human-readable sentence
+    from those. This validator is the mechanical enforcement of that
+    contract.
+    """
+    if value is None:
+        return value
+    if _DIGIT_RE.search(value):
+        raise ValueError(
+            f"{field_name} must be qualitative (no digits). "
+            f"Numbers belong in the structured tool outputs."
+        )
+    return value
+
+
+class VerificationReasoning(BaseModel):
+    """Typed, qualitative rationale for a VerificationResult.
+
+    Split into routing + rationale + optional notes. All free-text fields
+    are validated to contain no digits -- the agent literally cannot
+    paraphrase a number into these fields. The human-readable reasoning
+    sentence in the markdown report is composed by ``report.py`` from
+    these qualitative fields plus the structured ``discrepancies`` /
+    ``macro_consistency`` / ``sources`` on the parent result.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    routing_decision: RoutingDecision = Field(
+        description=(
+            "Which routing path was taken: 'barcode_off' for EAN/UPC "
+            "lookups, 'generic_usda' or 'generic_ciqual' for generic "
+            "foods, 'known_variance' for catalogue hits, 'manual_review' "
+            "when no confident path exists."
+        )
+    )
+    source_choice_rationale: str = Field(
+        description=(
+            "One or two sentences on why the chosen source(s) are the "
+            "right reference for this item. Qualitative only -- no digits."
+        )
+    )
+    variance_notes: str | None = Field(
+        default=None,
+        description=(
+            "Optional note on natural variability (e.g. farmed vs wild). "
+            "Qualitative only -- no digits."
+        ),
+    )
+    correction_rationale: str | None = Field(
+        default=None,
+        description=(
+            "Optional note explaining why a correction is being proposed. "
+            "Qualitative only -- no digits."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _no_digits_in_prose(self) -> VerificationReasoning:
+        _reject_digits(self.source_choice_rationale, "source_choice_rationale")
+        _reject_digits(self.variance_notes, "variance_notes")
+        _reject_digits(self.correction_rationale, "correction_rationale")
+        return self
+
+
 class ToolCall(BaseModel):
     """A single tool invocation recorded for the trace."""
 
@@ -234,7 +316,13 @@ class VerificationResult(BaseModel):
         default=None,
         description="Only populated when status=DISCREPANCY and confidence is high.",
     )
-    reasoning: str = Field(description="Short natural-language rationale.")
+    reasoning: VerificationReasoning = Field(
+        description=(
+            "Structured qualitative rationale. Narrative fields are "
+            "validated to contain no digits; numbers live in the "
+            "structured tool outputs above."
+        )
+    )
     error: str | None = Field(
         default=None, description="Populated only when status=ERROR."
     )

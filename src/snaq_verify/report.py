@@ -112,7 +112,7 @@ def _markdown_detail(row: dict) -> list[str]:
     out.append(f"- Confidence: **{res['confidence']:.2f}**")
     if res.get("error"):
         out.append(f"- Error: `{res['error']}`")
-    out.append(f"- Reasoning: {res.get('reasoning', '')}")
+    out.append(f"- Reasoning: {_compose_reasoning(res)}")
 
     if res.get("sources"):
         out.append("\n### Sources\n")
@@ -139,3 +139,39 @@ def _markdown_detail(row: dict) -> list[str]:
         out.append("```")
 
     return out
+
+
+_ROUTING_SENTENCE = {
+    "barcode_off": "Routed to Open Food Facts by barcode",
+    "generic_usda": "Routed to USDA FoodData Central for a generic reference",
+    "generic_ciqual": "Routed to ANSES CIQUAL for a generic reference",
+    "known_variance": "Classified as naturally variable via the catalogue",
+    "manual_review": "Deferred to manual review",
+}
+
+
+def _compose_reasoning(res: dict) -> str:
+    """Build a human sentence from the structured ``VerificationReasoning``.
+
+    The agent's reasoning fields are qualitative (digit-free); the
+    numeric detail lives in ``sources``, ``macro_consistency`` and
+    ``discrepancies``. This helper stitches the two layers together so
+    the markdown report reads naturally without letting the LLM
+    paraphrase numbers.
+    """
+    r = res.get("reasoning") or {}
+    if isinstance(r, str):  # legacy reports predating M2
+        return r
+
+    parts: list[str] = []
+    route = r.get("routing_decision")
+    if route:
+        parts.append(_ROUTING_SENTENCE.get(route, route) + ".")
+    rationale = (r.get("source_choice_rationale") or "").strip()
+    if rationale:
+        parts.append(rationale if rationale.endswith(".") else rationale + ".")
+    for key in ("variance_notes", "correction_rationale"):
+        note = (r.get(key) or "").strip()
+        if note:
+            parts.append(note if note.endswith(".") else note + ".")
+    return " ".join(parts) if parts else "(no reasoning provided)"
