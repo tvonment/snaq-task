@@ -60,6 +60,16 @@ def verify(
         int | None,
         typer.Option("--concurrency", "-c", help="Override MAX_CONCURRENT_VERIFICATIONS."),
     ] = None,
+    verbose: Annotated[
+        int,
+        typer.Option(
+            "--verbose",
+            "-v",
+            count=True,
+            help="Increase log verbosity. -v enables DEBUG for snaq_verify; "
+            "-vv also re-enables httpx/openai/pydantic-ai INFO logging.",
+        ),
+    ] = 0,
 ) -> None:
     """Verify each item in ``input_file`` and write a report to ``out``."""
     # Imported lazily so --help works without env vars / optional deps.
@@ -77,6 +87,7 @@ def verify(
             min_confidence=min_confidence,
             use_cache=not no_cache,
             concurrency_override=concurrency,
+            verbose=verbose,
         )
     )
 

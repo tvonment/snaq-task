@@ -10,6 +10,7 @@ single biggest source of wrong matches. See DESIGN.md section 4.3.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -21,7 +22,12 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from snaq_verify.logic.constants import EXTERNAL_HTTP_TIMEOUT_S, HTTP_RETRY_ATTEMPTS
+from snaq_verify.clients._retry import parse_retry_after
+from snaq_verify.logic.constants import (
+    EXTERNAL_HTTP_TIMEOUT_S,
+    HTTP_RETRY_ATTEMPTS,
+    RETRY_AFTER_CAP_S,
+)
 from snaq_verify.models import (
     NutritionPer100g,
     NutritionReference,
@@ -83,6 +89,11 @@ class USDAClient:
             method, f"{USDA_BASE_URL}{path}", params=params, **kwargs
         )
         if response.status_code == 429 or response.status_code >= 500:
+            retry_after = parse_retry_after(
+                response.headers.get("Retry-After"), cap_s=RETRY_AFTER_CAP_S
+            )
+            if retry_after is not None and retry_after > 0:
+                await asyncio.sleep(retry_after)
             raise _RetryableHTTPError(
                 f"USDA returned {response.status_code}: {response.text[:200]}"
             )

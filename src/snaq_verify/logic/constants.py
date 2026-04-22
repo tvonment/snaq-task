@@ -36,3 +36,12 @@ DEFAULT_MIN_CORRECTION_CONFIDENCE: float = 0.8
 # HTTP
 EXTERNAL_HTTP_TIMEOUT_S: float = 10.0
 HTTP_RETRY_ATTEMPTS: int = 3
+
+# Open Food Facts is a volunteer-run, free service and aggressively rate-limits
+# bursts. We retry more patiently and cap per-client concurrency.
+OFF_RETRY_ATTEMPTS: int = 5
+OFF_BACKOFF_INITIAL_S: float = 1.0
+OFF_BACKOFF_MAX_S: float = 30.0
+OFF_MAX_CONCURRENCY: int = 2
+# Upper bound on how long we'll honor a server-provided Retry-After.
+RETRY_AFTER_CAP_S: float = 60.0

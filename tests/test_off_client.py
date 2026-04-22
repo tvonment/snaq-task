@@ -85,3 +85,31 @@ async def test_barcode_lookup_retries_on_5xx_then_succeeds(nutella_fixture: dict
         ref = await client.lookup_by_barcode("3017620422003")
     assert ref is not None
     assert route.call_count == 2
+
+
+@respx.mock
+async def test_barcode_lookup_honors_retry_after_on_429(
+    nutella_fixture: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("snaq_verify.clients.openfoodfacts.asyncio.sleep", _fake_sleep)
+
+    route = respx.get(
+        "https://world.openfoodfacts.org/api/v2/product/3017620422003.json"
+    ).mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "2"}, text="slow down"),
+            httpx.Response(200, json=nutella_fixture),
+        ]
+    )
+    async with OpenFoodFactsClient() as client:
+        ref = await client.lookup_by_barcode("3017620422003")
+    assert ref is not None
+    assert route.call_count == 2
+    # At least one inline sleep should have honored the 2s Retry-After hint.
+    assert any(s >= 2.0 for s in sleeps)
+

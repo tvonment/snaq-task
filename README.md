@@ -41,11 +41,15 @@ uv run snaq-verify food_items.json \
     [--format json,md,html] \
     [--apply-corrections --min-confidence 0.8] \
     [--no-cache] \
-    [--concurrency 5]
+    [--concurrency 5] \
+    [-v | -vv]
 ```
 
 `--apply-corrections` writes `outputs/food_items.corrected.json` with every
 proposed correction (above `--min-confidence`) merged into the originals.
+`-v` raises `snaq_verify` to DEBUG; `-vv` also re-enables the raw
+`httpx` / `openai` / `pydantic-ai` INFO firehose when you need to see
+every HTTP call.
 
 ### Tests
 
@@ -54,8 +58,9 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-38 unit tests covering pure logic, HTTP clients (mocked via `respx`), and the
-cache. No network required.
+39 unit tests covering pure logic, HTTP clients (mocked via `respx`,
+including 429 + `Retry-After` handling), and the cache. No network
+required.
 
 ---
 
@@ -165,7 +170,7 @@ src/snaq_verify/
     variance.py        Pure: known-variance catalogue
     constants.py       Named tolerances (no magic numbers)
 
-tests/             pytest + pytest-asyncio + respx — 38 tests, no network
+tests/             pytest + pytest-asyncio + respx — 39 tests, no network
 ```
 
 ---
@@ -193,9 +198,10 @@ tests/             pytest + pytest-asyncio + respx — 38 tests, no network
 5. **Branded-food matching heuristics.** Current USDA Branded fallback
    takes the first hit; a real system would score candidates by brand +
    name token overlap before trusting the match.
-6. **Structured logging + per-item cost/latency budget.** Today logs go
-   to stdout; tool-call latencies are in the JSON report but there's no
-   per-run cost accounting.
+6. **Structured logging + per-item cost/latency budget.** The console
+   shows a concise one-line-per-item progress view and tool-call
+   latencies live in the JSON report, but there's no per-run cost
+   accounting yet.
 7. **Retry the model on tool-argument validation errors.** Rare, but
    when the LLM emits a malformed tool arg, pydantic-ai raises — the
    runner currently turns it into `ERROR` without a retry.
