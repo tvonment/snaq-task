@@ -227,21 +227,16 @@ Priority order matches the value of catching regressions:
 2. **Clients** (`usda`, `openfoodfacts`) — mocked with `respx`: 200, 404,
    429, timeout, malformed payload.
 3. **Normalization** — USDA and OFF payload fixtures → `NutritionReference`.
-4. **Agent golden set** — hand-labelled expected status per sample item
-   (chicken → `VERIFIED`, farmed salmon → `HIGH_VARIANCE`, etc). Runs
-   against the cache, not live APIs.
+4. **Stability aggregator** — the pure aggregator in
+   [`eval/stability.py`](eval/stability.py) is unit-tested with
+   hand-crafted fake `verify_*.json` and `judge_*.json` pairs; the
+   LLM never runs in the test loop.
 
 ## 9. Bonus: verifying the verifier
 
 Two layers, both cheap, both shipped:
 
-1. **Golden-set checker** (`eval/golden.py`) — reads the JSON report and
-   asserts each item's status is in an allowed set with a minimum
-   confidence. Run via `uv run python -m eval.golden outputs/report.json`;
-   exits non-zero on regression. Deliberately thin — it catches the gross
-   cases (farmed salmon must be `HIGH_VARIANCE`) without over-specifying
-   the agent's freedom.
-2. **LLM-as-judge** (`eval/judge.py`, exposed as
+1. **LLM-as-judge** (`eval/judge.py`, exposed as
    `uv run snaq-verify judge outputs/report.json`) — a *different*
    prompt (and, via `AZURE_OPENAI_JUDGE_DEPLOYMENT`, ideally a
    different model family) re-reads each item's structured
@@ -251,14 +246,31 @@ Two layers, both cheap, both shipped:
    summary}`. Concerns are typed: `JudgeConcern.kind` is an 8-value
    enum (`wrong_reference`, `correction_provenance`, `unit_mismatch`,
    `missing_citation`, `paraphrase`, `rubric_violation`,
-   `variance_reasoning`, `nitpick`). Disagreements between the
-   verifier and the judge are the review queue.
-3. **Aggregate metrics** (`eval/metrics.py`, written to
-   `outputs/metrics.json`) — `concern_kind_counts` bucketed over all
-   items plus a combined `grounded_success_rate` (item passes the
-   golden set **and** the judge marks it grounded). Individual numbers
-   move between runs due to LLM non-determinism; bucket shape is the
-   stable signal to track run over run.
+   `variance_reasoning`, `nitpick`). Read the judge honestly: it
+   grounds the verifier's reasoning against the trace it produced,
+   not against truth.
+2. **Stability matrix** (`eval/stability.py`, exposed as
+   `uv run snaq-verify stability food_items.json --runs K`) — sweeps
+   `reasoning_effort` levels (`minimal`/`low`/`medium`/`high` by
+   default) and runs verify + judge K times **per level**. The
+   resulting matrix has two layers: an **effort summary** table (rows =
+   effort levels, columns = status agreement, confidence, judge
+   grounded rate, kind-set Jaccard, mean tool calls per run as a cost
+   proxy) and per-effort detail tables (one row per item, every run
+   side by side, modal status, per-field correction agreement on the
+   modal-status subset). At n=11 with no hand-labelled ground truth,
+   measuring *consistency under varied effort* is more honest than
+   pretending to measure correctness — and the cost-vs-quality
+   tradeoff falls out of the same matrix. The verifier is a reasoning
+   model (`gpt-5-mini`) which ignores `temperature`, so effort is the
+   only knob that meaningfully changes its behaviour; the judge is a
+   non-reasoning model (`gpt-5-chat`) pinned at `temperature=0` so it
+   stays a stable reference signal across the sweep. An earlier draft
+   shipped a hand-authored `golden.py` and a `metrics.json` aggregator;
+   both were dropped because at this sample size they mostly measured
+   my own expectations, not the agent's quality. A
+   nutritionist-reviewed ground-truth set is called out in the README
+   as future work.
 
 ## 10. Productization note (goes in README)
 

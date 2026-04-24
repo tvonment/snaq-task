@@ -15,8 +15,10 @@ Python does the arithmetic. The hard parts are unit-testable.
   a critical self-review of what shipped.
 - [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md) — attribution for the
   bundled CIQUAL subset.
-- [eval/golden.py](eval/golden.py) / [eval/judge.py](eval/judge.py) —
-  the "verify the verifier" layer.
+- [eval/judge.py](eval/judge.py) / [eval/stability.py](eval/stability.py)
+  — the "verify the verifier" layer. Judge grounds reasoning against
+  the trace the agent actually produced (not against truth); stability
+  measures agreement across K independent runs.
 
 ---
 
@@ -60,18 +62,46 @@ uv run snaq-verify verify food_items.json \
 uv run snaq-verify judge outputs/report.json \
     [--out outputs/judge.json] \
     [--concurrency 3]
+
+uv run snaq-verify stability food_items.json \
+    [--runs 3] \
+    [--efforts minimal,low,medium,high] \
+    [--no-judge] \
+    [--concurrency 5]
 ```
 
 The `judge` command writes `outputs/judge.json` + `outputs/judge.md`
-(verdicts per item, with `generated_at` and the `judge_deployment` used)
-and `outputs/metrics.json`, a small aggregate of verifier status counts,
-golden-set pass/fail, judge `grounded_rate`, the combined
-`grounded_success_rate` (item passes golden **and** the judge calls it
-grounded), and `concern_kind_counts` bucketed by the 8-kind taxonomy
+(verdicts per item, with `generated_at` and the `judge_deployment`
+used). Each concern is bucketed into an 8-kind taxonomy
 (`wrong_reference`, `correction_provenance`, `unit_mismatch`,
 `missing_citation`, `paraphrase`, `rubric_violation`,
-`variance_reasoning`, `nitpick`). That last number is the one worth
-tracking run over run — it moves when the agent actually gets better.
+`variance_reasoning`, `nitpick`). **Read this honestly:** the judge
+checks that the verifier's reasoning is grounded *in the trace it
+produced*, not that the answer is correct. It catches paraphrase
+drift, unsupported citations, and rubric violations — not factual
+errors upstream of the sources.
+
+The `stability` command sweeps `reasoning_effort` levels and runs
+verify (and optionally judge) K times **per level**. Each run is
+written under `outputs/stability/<effort>/run_{k}/report.{json,md}`
+(+ `judge.{json,md}`) and aggregated into `outputs/stability/matrix.json`
++ `matrix.md`. The matrix has two layers:
+
+- **Effort summary** — one row per effort level: status agreement,
+  confidence, judge grounded rate, Jaccard kind-set similarity, and
+  mean tool calls per run as a cost proxy. Read it as: *what's the
+  lowest effort whose grounded rate matches `high`?* That's the
+  cheapest setting to ship.
+- **Per-effort detail** — verifier and judge tables with one row per
+  food item showing every run side by side, the modal status, and
+  per-field correction agreement on the modal-status subset.
+
+At n=11 with no hand-labelled ground truth, sweeping effort and
+measuring *consistency under varied effort* is more honest than
+pretending to measure correctness — and the cost-vs-quality tradeoff
+falls straight out of the same matrix. Cost note: the default sweep
+is 4 efforts × 3 runs × 11 items = 132 verifier calls (+132 judge
+calls); narrow it with `--efforts low,medium` while iterating.
 
 `--apply-corrections` writes `outputs/food_items.corrected.json` with every
 proposed correction (above `--min-confidence`) merged into the originals.
@@ -86,7 +116,7 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-88 unit tests covering pure logic, HTTP clients (mocked via `respx`,
+86 unit tests covering pure logic, HTTP clients (mocked via `respx`,
 including 429 + `Retry-After` handling), structured-reasoning validators,
 the semantics catalogue, and the judge concern-kind aggregation. No
 network required.
@@ -185,7 +215,7 @@ The agent writes two reports per run:
 
 - **`report.json`** — machine-readable, includes every tool call
   (name, args, result summary, latency) per item. Consumed by the
-  judge and golden-set eval.
+  judge and the stability matrix.
 - **`report.md`** — human summary table + details section per
   non-`VERIFIED` item.
 
@@ -231,9 +261,8 @@ src/snaq_verify/
     constants.py       Named tolerances (no magic numbers)
 
 eval/
-  golden.py        Structural expectations per item; exit non-zero on regression
   judge.py         LLM-as-judge; re-reads report.json for grounding
-  metrics.py       Aggregates: grounded_success_rate + concern_kind_counts
+  stability.py     Sweep reasoning_effort x K runs; aggregate the matrix
 
 data/
   ciqual_subset.json  Bundled CIQUAL subset (attribution: data/CIQUAL_LICENSE.md)
@@ -245,16 +274,21 @@ tests/             pytest + pytest-asyncio + respx — no network
 
 ## What I would do differently with more time
 
-1. **A richer LLM-as-judge.** A judge ships in
-   [eval/judge.py](eval/judge.py) with a typed 8-kind concern taxonomy,
-   a "different deployment by default" env var
-   (`AZURE_OPENAI_JUDGE_DEPLOYMENT`), and an aggregated
-   `grounded_success_rate` metric in [outputs/metrics.json](outputs/metrics.json).
-   With more time it would aggregate those metrics over historical
-   runs (SQLite, not a single JSON), feed disagreements into a human
-   review queue, and run deterministic judges (temperature = 0 + fixed
-   seed + replay cache) so bucket-shape trends are apples-to-apples
-   across sessions.
+1. **Hand-labelled ground truth.** The stability matrix measures
+   whether the agent agrees with *itself* across runs; it cannot
+   measure whether the agent is *right*. A small nutritionist-reviewed
+   golden set (say 20 items with expected status + kcal bands) would
+   let the judge and the stability harness score correctness, not just
+   consistency. Building it honestly requires a domain expert, not
+   another LLM, which is why it isn't in the box.
+2. **A richer LLM-as-judge.** The current judge ships in
+   [eval/judge.py](eval/judge.py) with a typed 8-kind concern
+   taxonomy and a "different deployment by default" env var
+   (`AZURE_OPENAI_JUDGE_DEPLOYMENT`). With more time it would
+   aggregate verdicts over historical runs (SQLite, not just K
+   snapshots), feed disagreements into a human review queue, and run
+   self-consistency (K-sample majority voting) when a single-run
+   judge verdict sits on the fence.
 2. **Full CIQUAL ingest.** The repo bundles a curated English-labelled
    subset under [data/ciqual_subset.json](data/ciqual_subset.json) with
    attribution in [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md).

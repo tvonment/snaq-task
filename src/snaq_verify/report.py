@@ -26,6 +26,7 @@ def write_reports(
     out_dir: Path,
     formats: tuple[str, ...],
     model_deployment: str,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Write the selected report formats to ``out_dir``.
 
@@ -36,9 +37,9 @@ def write_reports(
     rows = [_build_row(items_by_id[r.item_id], r, traces.get(r.item_id, [])) for r in results]
 
     if "json" in formats:
-        _write_json(out_dir, rows, generated_at, model_deployment)
+        _write_json(out_dir, rows, generated_at, model_deployment, reasoning_effort)
     if "md" in formats:
-        _write_markdown(out_dir, rows, generated_at, model_deployment)
+        _write_markdown(out_dir, rows, generated_at, model_deployment, reasoning_effort)
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +62,17 @@ def _build_row(
 # ---------------------------------------------------------------------------
 
 
-def _write_json(out_dir: Path, rows: list[dict], generated_at: str, model: str) -> None:
+def _write_json(
+    out_dir: Path,
+    rows: list[dict],
+    generated_at: str,
+    model: str,
+    reasoning_effort: str | None,
+) -> None:
     doc = {
         "generated_at": generated_at,
         "model_deployment": model,
+        "reasoning_effort": reasoning_effort,
         "items": rows,
     }
     (out_dir / "report.json").write_text(json.dumps(doc, indent=2, default=str))
@@ -79,11 +87,20 @@ _STATUS_BADGE = {
 }
 
 
-def _write_markdown(out_dir: Path, rows: list[dict], generated_at: str, model: str) -> None:
+def _write_markdown(
+    out_dir: Path,
+    rows: list[dict],
+    generated_at: str,
+    model: str,
+    reasoning_effort: str | None,
+) -> None:
     lines: list[str] = []
     lines.append("# SNAQ nutrition verification report\n")
     lines.append(f"- Generated: `{generated_at}`")
-    lines.append(f"- Model: `{model}`\n")
+    lines.append(f"- Model: `{model}`")
+    if reasoning_effort:
+        lines.append(f"- Reasoning effort: `{reasoning_effort}`")
+    lines.append("")
 
     lines.append("## Summary\n")
     lines.append("| # | Item | Status | Confidence |")

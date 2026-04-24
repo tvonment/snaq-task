@@ -1,5 +1,10 @@
 # GitHub Copilot Instructions — SNAQ Nutrition Verification Agent
 
+Read [home_task.md](../home_task.md) FIRST. Before adding any feature,
+re-read it. If it isn't asked for there, it probably shouldn't exist.
+The task explicitly values focused, deliberate work and warns against
+over-engineering — bias toward removing scope, not adding it.
+
 Read [DESIGN.md](../DESIGN.md) for the full rationale. This file is the
 short, prescriptive version for code generation.
 
@@ -16,12 +21,14 @@ runner  (asyncio.gather + Semaphore)
     ↓ per item
 pydantic-ai Agent  (Azure OpenAI, temperature=0)
     ↓ typed tool calls
-Tools: usda / openfoodfacts / validation / discrepancy / variance
+Tools: usda / openfoodfacts / ciqual / validation / discrepancy / variance / semantics / completeness
     ↓
-report.{json,md,html}   +   food_items.corrected.json (optional)
+report.{json,md}   +   food_items.corrected.json (optional)
 ```
 
-No frontend. No MCP server. No docker-compose. No SSE. One command.
+No frontend. No MCP server. No docker-compose. No SSE. No response
+cache — if a query varies across runs that's a real signal from the
+agent, not noise to mask. One command.
 
 ---
 
@@ -77,9 +84,8 @@ snaq-task/
 | LLM | Azure OpenAI (Foundry), `temperature=0`, deployment from env |
 | HTTP | `httpx.AsyncClient` (never `requests`, never `aiohttp`) |
 | Retry | `tenacity` |
-| Cache | stdlib `sqlite3`, keyed on `(source, query_hash)` |
 | Parallelism | `asyncio.gather` + `asyncio.Semaphore` |
-| CLI | `typer` (or stdlib `argparse` if we want zero extra deps) |
+| CLI | `typer` |
 | Tests | `pytest`, `pytest-asyncio`, `respx` |
 | Lint/format | `ruff` |
 
@@ -96,7 +102,6 @@ AZURE_OPENAI_DEPLOYMENT=gpt-5-mini
 AZURE_OPENAI_API_VERSION=2024-10-21
 USDA_API_KEY=...
 MAX_CONCURRENT_VERIFICATIONS=5
-CACHE_PATH=.cache/snaq.sqlite
 LOG_LEVEL=INFO
 ```
 
@@ -107,9 +112,8 @@ LOG_LEVEL=INFO
 ```
 uv run snaq-verify food_items.json \
     [--out outputs/] \
-    [--format json,md,html] \
+    [--format json,md] \
     [--apply-corrections --min-confidence 0.8] \
-    [--no-cache] \
     [--concurrency 5]
 ```
 
@@ -193,10 +197,12 @@ def check_known_variance(
 - Every external call has an explicit `timeout=10.0`.
 - `tenacity`: 3 attempts, exponential backoff with jitter, retry on
   `httpx.TimeoutException`, `httpx.HTTPStatusError` for 429/5xx.
-- Cache wraps the client, not the tool — the cache is source-agnostic.
 - On 404 / no match: return `None`, never raise.
 - Normalize to `NutritionReference` before returning. Raw API payloads
   never leak past the client layer.
+- No response cache. If a source returns different data across runs,
+  that's signal the agent queried it differently — the stability matrix
+  surfaces it instead of hiding it.
 
 ### Error handling
 
@@ -210,8 +216,6 @@ def check_known_variance(
 - `report.json`: full trace including every tool call (args, result, latency).
 - `report.md`: human-readable table, one row per item, plus a details
   section per non-`VERIFIED` item.
-- `report.html` (optional, default on): single self-contained file built
-  from a Jinja2 template. No external CSS/JS, no build step.
 
 ---
 
@@ -234,9 +238,15 @@ Write tests alongside implementation.
 - 10 items complete in parallel within reasonable time.
 - One throwing item does not kill the others.
 
-**Agent (golden set):**
-- Runs with cache populated from fixtures, not live APIs.
-- Asserts status + confidence band per sample item.
+**Meta-eval (stability matrix):**
+- `eval/stability.py` runs verify + judge K times and aggregates
+  per-item agreement (modal status, confidence stdev, judge `grounded`
+  agreement, Jaccard on concern-kind sets). This replaces the previous
+  golden/metrics scaffolding — at n=11 with no hand-labelled ground
+  truth, measuring the agent's *consistency* is more honest than
+  pretending to measure correctness.
+- Aggregator is pure-Python and unit-tested with hand-crafted fake
+  verify/judge JSONs; no LLM in the test loop.
 
 Test names ARE the documentation:
 

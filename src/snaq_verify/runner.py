@@ -63,6 +63,7 @@ async def run_verification(
     min_confidence: float,
     concurrency_override: int | None,
     verbose: int = 0,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Top-level entry point invoked from the CLI."""
     settings = Settings.load()
@@ -71,12 +72,13 @@ async def run_verification(
     items = _FOOD_ITEMS_ADAPTER.validate_json(input_file.read_text())
     concurrency = concurrency_override or settings.max_concurrent
     _LOG.info(
-        "Verifying %d items  concurrency=%d",
+        "Verifying %d items  concurrency=%d%s",
         len(items),
         concurrency,
+        f"  reasoning_effort={reasoning_effort}" if reasoning_effort else "",
     )
 
-    agent = build_agent(settings)
+    agent = build_agent(settings, reasoning_effort=reasoning_effort)  # type: ignore[arg-type]
 
     async with (
         USDAClient(settings.usda_api_key) as usda,
@@ -138,6 +140,7 @@ async def run_verification(
         out_dir=out_dir,
         formats=formats,
         model_deployment=settings.azure_deployment,
+        reasoning_effort=reasoning_effort,
     )
 
     if apply_corrections:

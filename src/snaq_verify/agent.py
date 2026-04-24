@@ -19,7 +19,7 @@ from typing import Literal
 
 from openai import AsyncOpenAI
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from snaq_verify.clients.ciqual import CIQUALClient
@@ -120,13 +120,23 @@ the schema will reject the response.
 """
 
 
-def build_agent(settings: Settings) -> Agent[Deps, VerificationResult]:
+def build_agent(
+    settings: Settings,
+    *,
+    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None,
+) -> Agent[Deps, VerificationResult]:
     """Build the pydantic-ai agent bound to Azure AI Foundry.
 
     Foundry's v1 API uses a plain OpenAI-compatible base URL ending in
     ``/openai/v1/``. We therefore use a vanilla ``AsyncOpenAI`` client
     rather than ``AsyncAzureOpenAI`` -- the latter always appends the
     ``api-version`` query parameter, which the v1 path rejects.
+
+    ``reasoning_effort`` is forwarded to OpenAI-family reasoning
+    models (gpt-5, o-series). Lower effort is cheaper and faster;
+    higher effort explores more reasoning paths. We expose it as a
+    knob rather than hardcoding it so the stability matrix can compare
+    effort levels.
     """
     base_url = settings.azure_endpoint.rstrip("/") + "/"
     openai_client = AsyncOpenAI(
@@ -137,11 +147,21 @@ def build_agent(settings: Settings) -> Agent[Deps, VerificationResult]:
         settings.azure_deployment,
         provider=OpenAIProvider(openai_client=openai_client),
     )
+    # We deliberately do NOT set temperature: gpt-5-style reasoning
+    # deployments reject sampling params, and we want any residual
+    # non-determinism to surface in the stability matrix rather than
+    # being silently muted (or loudly warned about) by the SDK.
+    model_settings: OpenAIChatModelSettings | None = None
+    if reasoning_effort is not None:
+        model_settings = OpenAIChatModelSettings(
+            openai_reasoning_effort=reasoning_effort,
+        )
     agent: Agent[Deps, VerificationResult] = Agent(
         model=model,
         deps_type=Deps,
         output_type=VerificationResult,
         system_prompt=SYSTEM_PROMPT,
+        model_settings=model_settings,
     )
     _register_tools(agent)
     return agent

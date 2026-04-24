@@ -1,15 +1,11 @@
-"""Tests for the M3 typed judge concerns."""
+"""Tests for the typed judge concerns."""
 
 from __future__ import annotations
-
-import json
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from eval.judge import render_judge_markdown
-from eval.metrics import compute_metrics
 from snaq_verify.models import JudgeConcern, JudgeVerdict
 
 
@@ -72,75 +68,3 @@ def test_markdown_omits_concern_kinds_section_when_no_concerns() -> None:
     )
     md = render_judge_markdown([v])
     assert "## Concern kinds" not in md
-
-
-def test_metrics_aggregates_concern_kind_counts(tmp_path: Path) -> None:
-    report = tmp_path / "report.json"
-    judge = tmp_path / "judge.json"
-    report.write_text(
-        json.dumps(
-            {
-                "items": [
-                    {
-                        "item": {"id": "chicken-breast-raw"},
-                        "result": {
-                            "item_id": "chicken-breast-raw",
-                            "status": "DISCREPANCY",
-                            "confidence": 0.8,
-                        },
-                        "trace": [],
-                    }
-                ]
-            }
-        )
-    )
-    judge.write_text(
-        json.dumps(
-            {
-                "verdicts": [
-                    {
-                        "item_id": "chicken-breast-raw",
-                        "grounded": False,
-                        "concerns": [
-                            {"kind": "paraphrase", "field": None, "detail": "x"},
-                            {
-                                "kind": "correction_provenance",
-                                "field": "proposed_correction.protein_g",
-                                "detail": "y",
-                            },
-                            {"kind": "paraphrase", "field": None, "detail": "z"},
-                        ],
-                        "judge_confidence": 0.9,
-                        "summary": "s",
-                    }
-                ]
-            }
-        )
-    )
-    m = compute_metrics(report, judge)
-    assert m.concern_kind_counts == {"paraphrase": 2, "correction_provenance": 1}
-
-
-def test_metrics_tolerates_legacy_string_concerns(tmp_path: Path) -> None:
-    # Old reports stored concerns as plain strings; compute_metrics must
-    # not blow up, just skip them in the kind counts.
-    report = tmp_path / "report.json"
-    judge = tmp_path / "judge.json"
-    report.write_text(json.dumps({"items": []}))
-    judge.write_text(
-        json.dumps(
-            {
-                "verdicts": [
-                    {
-                        "item_id": "x",
-                        "grounded": False,
-                        "concerns": ["some old free-text concern"],
-                        "judge_confidence": 0.5,
-                        "summary": "s",
-                    }
-                ]
-            }
-        )
-    )
-    m = compute_metrics(report, judge)
-    assert m.concern_kind_counts == {}

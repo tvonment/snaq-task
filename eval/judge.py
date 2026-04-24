@@ -25,6 +25,7 @@ from openai import AsyncOpenAI
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 
 from snaq_verify.config import Settings
 from snaq_verify.models import JudgeConcern, JudgeVerdict
@@ -80,7 +81,17 @@ def _build_judge_agent(settings: Settings) -> tuple[Agent[None, JudgeVerdict], s
     base_url = settings.azure_endpoint.rstrip("/") + "/"
     client = AsyncOpenAI(base_url=base_url, api_key=settings.azure_api_key)
     model = OpenAIChatModel(deployment, provider=OpenAIProvider(openai_client=client))
-    agent = Agent(model=model, output_type=JudgeVerdict, system_prompt=_JUDGE_SYSTEM_PROMPT)
+    # The judge runs on a non-reasoning chat deployment by convention
+    # (gpt-5-chat). temperature=0 actually does something there --
+    # unlike on a reasoning verifier -- so we pin it. We want the judge
+    # to be the most deterministic part of the pipeline so verifier-
+    # side variables (e.g. reasoning_effort sweeps) read cleanly.
+    agent = Agent(
+        model=model,
+        output_type=JudgeVerdict,
+        system_prompt=_JUDGE_SYSTEM_PROMPT,
+        model_settings=ModelSettings(temperature=0.0),
+    )
     return agent, deployment
 
 
@@ -172,14 +183,6 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
         )
     )
 
-    # M5: snapshot judge-verifier agreement alongside the judge output so
-    # every run produces a diffable metrics.json next to report.json.
-    from eval.metrics import compute_metrics, write_metrics
-
-    metrics = compute_metrics(report_path=report_path, judge_path=out_path)
-    metrics_path = out_path.parent / "metrics.json"
-    write_metrics(metrics, metrics_path)
-
     n_grounded = sum(1 for v in verdicts if v.grounded)
     _LOG.info(
         "Judge done: %d/%d grounded -> %s (+ %s)",
@@ -187,13 +190,6 @@ async def run_judge(report_path: Path, out_path: Path, concurrency: int = 3) -> 
         len(verdicts),
         out_path,
         md_path.name,
-    )
-    _LOG.info(
-        "Grounded success: %d/%d (%.2f) -> %s",
-        metrics.grounded_success_count,
-        metrics.golden_covered,
-        metrics.grounded_success_rate,
-        metrics_path,
     )
 
 

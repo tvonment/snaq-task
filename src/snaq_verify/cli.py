@@ -124,5 +124,93 @@ def judge(
     asyncio.run(run_judge(report_path=report, out_path=out, concurrency=concurrency))
 
 
+@app.command()
+def stability(
+    input_file: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="Path to food_items.json.",
+        ),
+    ],
+    runs: Annotated[
+        int,
+        typer.Option(
+            "--runs",
+            "-k",
+            min=1,
+            help="Number of independent verify (and judge) runs PER effort level.",
+        ),
+    ] = 3,
+    efforts: Annotated[
+        str,
+        typer.Option(
+            "--efforts",
+            help="Comma-separated reasoning effort levels to sweep "
+            "(any of: minimal, low, medium, high).",
+        ),
+    ] = "minimal,low,medium,high",
+    out: Annotated[
+        Path,
+        typer.Option(
+            "--out",
+            "-o",
+            help="Output directory (a 'stability/' subdir is created inside).",
+        ),
+    ] = Path("outputs"),
+    no_judge: Annotated[
+        bool,
+        typer.Option(
+            "--no-judge",
+            help="Skip running the LLM-as-judge after each verify run.",
+        ),
+    ] = False,
+    concurrency: Annotated[
+        int | None,
+        typer.Option("--concurrency", "-c", help="Override MAX_CONCURRENT_VERIFICATIONS."),
+    ] = None,
+    verbose: Annotated[
+        int,
+        typer.Option("--verbose", "-v", count=True, help="Increase log verbosity."),
+    ] = 0,
+) -> None:
+    """Sweep reasoning effort x K runs; aggregate a stability matrix.
+
+    At n=11 with no hand-labelled ground truth, stability (the agent
+    agreeing with itself across runs) is a more honest signal than a
+    fabricated golden set. Sweeping ``reasoning_effort`` lets us see
+    whether higher effort actually buys more grounded answers, or just
+    burns tokens. Writes ``<out>/stability/<effort>/run_{k}/`` for each
+    (effort, run) pair plus ``<out>/stability/matrix.{json,md}``.
+    """
+    import asyncio
+
+    from eval.stability import DEFAULT_EFFORTS, run_stability
+
+    valid = set(DEFAULT_EFFORTS)
+    parsed_efforts = tuple(e.strip() for e in efforts.split(",") if e.strip())
+    invalid = [e for e in parsed_efforts if e not in valid]
+    if invalid:
+        raise typer.BadParameter(
+            f"unknown effort(s): {invalid}. Valid: {sorted(valid)}"
+        )
+    if not parsed_efforts:
+        raise typer.BadParameter("at least one effort level is required")
+
+    asyncio.run(
+        run_stability(
+            input_file=input_file,
+            runs=runs,
+            out_dir=out,
+            efforts=parsed_efforts,
+            include_judge=not no_judge,
+            concurrency_override=concurrency,
+            verbose=verbose,
+        )
+    )
+
+
 if __name__ == "__main__":
     app()

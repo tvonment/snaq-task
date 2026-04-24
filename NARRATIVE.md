@@ -281,3 +281,70 @@ move on.
   against 11 items is trivial.
 - **M2 \u2014 structured, digit-free reasoning.** `VerificationResult.reasoning`
   went from a free-form string to a Pydantic model\n  (`routing_decision` / `source_choice_rationale` / `variance_notes` /\n  `correction_rationale`) with a `model_validator` that rejects any\n  digit. The agent can't paraphrase numbers badly anymore \u2014 it has to\n  name the quantity (\"calories look low versus USDA Foundation\")\n  instead of approximating it (\"calories differ by roughly 30\").\n  Numbers live in `discrepancies`.\n- **M3 \u2014 typed judge concerns.** The judge was returning free-text\n  \"concerns\"; the 8-kind enum (`wrong_reference`,\n  `correction_provenance`, `unit_mismatch`, `missing_citation`,\n  `paraphrase`, `rubric_violation`, `variance_reasoning`, `nitpick`)\n  turned those into a histogram we could track over runs. `nitpick` is\n  the escape hatch: judges flag it, but it doesn't count against\n  `grounded`. The first run with the enum gave a clean baseline\n  histogram \u2014 eight `wrong_reference`, seven `correction_provenance`,\n  five `unit_mismatch`. That's the to-do list.\n- **M5 \u2014 `grounded_success_rate` + provenance on the judge.** An item\n  passes the golden set *and* the judge calls it grounded \u2014 one\n  number per run, in `metrics.json`. `judge.json` and `judge.md` also\n  got `generated_at` and `judge_deployment` so fresh and stale\n  artefacts can't be confused, and so gpt-5-mini-judged and\n  gpt-5-chat-1-judged runs are comparable by inspection.\n- **M4 \u2014 reference payloads in the trace + semantics catalogue.** The\n  two biggest buckets at baseline were `wrong_reference` and\n  `correction_provenance`: the judge couldn't verify the agent's\n  proposed corrections because the trace only carried a one-line\n  match summary, not the numbers the agent saw. Adding\n  `ToolCall.result_payload` (the full `NutritionReference` model_dump\n  for every lookup) gave the judge something to check against.\n  Simultaneously, `logic/semantics.py` + a pure `compare_semantics`\n  tool attacked `unit_mismatch`: USDA \"carbohydrate, by difference\"\n  vs CIQUAL `glucides` is a definitional delta, not a disagreement,\n  and the agent should know that before it computes a discrepancy.\n\nThe bucket shape after M4 (judge = gpt-5-chat-1, verifier = gpt-5-mini,\nn = 11):\n\n| concern_kind          | M3 baseline | After M4 |\n|-----------------------|-------------|----------|\n| `correction_provenance` | 7           | **2**    |\n| `wrong_reference`       | 8           | **4**    |\n| `rubric_violation`      | 5           | **2**    |\n| `unit_mismatch`         | 5           | 7\u2020       |\n| `grounded_success_rate` | 0.27        | **0.45** |\n\n\u2020 `unit_mismatch` ticked up because the semantics notes now appear\n*in the trace*; the mismatches were already there, the judge just\ncouldn't cite them before. That's the right direction.\n\nWhat made this loop work was investing in M2, M3 and M5 *before*\ntouching M4. The verifier's schema (structured reasoning, digit-free\nprose), the judge's schema (typed concerns), and the aggregate metric\n(`grounded_success_rate`) are all typed Pydantic models \u2014 so the\nchanges in M4 had somewhere concrete to land. Without any one of\nthem, M4 would have been \"the judge seems happier\", which isn't a\nmetric.\n\nThe remaining buckets (`wrong_reference=4`, `unit_mismatch=7`) are\nthe next session's problem \u2014 probably a better USDA match-relevance\ngate and per-source semantic filtering at the discrepancy layer. The\nloop is set up to answer that the same way.
+
+
+## 11. The honest correction: golden was theatre, ground truth was missing
+
+The M1–M5 loop above closes with a number (`grounded_success_rate =
+0.45`) and an implication that the loop kept turning. It didn't —
+not as written. Three things broke that frame and forced a redesign.
+
+**Repeatability.** Re-running `verify` and `judge` on the same input
+gave different answers between runs. Different statuses on borderline
+items, different proposed corrections, different judge verdicts. That
+is fatal for a "before/after bucket numbers in the commit body"
+workflow: the buckets weren't measuring my changes, they were
+measuring run-to-run noise plus my changes, and at n=11 the noise
+floor was loud.
+
+**Golden was measuring me, not the agent.** `eval/golden.py` was
+hand-authored: I wrote down the statuses I expected and counted
+matches. With no nutritionist in the loop, the golden file encoded my
+assumptions about the items, not ground truth. When the agent
+disagreed, the right epistemic response was *I'm not sure who's
+right* — but the metric reported it as a regression. That's
+fake-rigor.
+
+**`metrics.json` was a single number off a noisy single run.** One
+verify pass, one judge pass, divide. Not an aggregate, not a
+distribution, not a confidence interval. Useful as a smoke test;
+misleading as a quality signal.
+
+The fix had three pieces:
+
+1. **Delete the fake-rigor.** `eval/golden.py`, `eval/metrics.py`,
+   `outputs/metrics.json`, and their tests are gone. Better no number
+   than a misleading one.
+2. **Replace it with a stability matrix.** `uv run snaq-verify
+   stability food_items.json` runs verify + judge K times and
+   aggregates per-item agreement: modal status, status-agreement %,
+   confidence mean/stdev, judge `grounded` agreement, Jaccard
+   similarity of concern-kind sets. We can't say *correct*, but we
+   can say *stable*, and stability is necessary for correctness.
+3. **Sweep `reasoning_effort` as the sweep axis.** Once the matrix
+   existed, the natural next question was *do we even need
+   `medium`/`high`?* So `stability` runs each effort level K times
+   and renders an "effort summary" table on top of the per-effort
+   detail: status agreement, judge grounded rate, mean tool calls per
+   run. Read it as: *what's the lowest effort whose grounded rate
+   matches `high`?* That's the cheapest setting to ship, and it falls
+   out of the same artefact that proves the agent is stable.
+
+Two model decisions came out of the same redesign. The verifier is
+`gpt-5-mini`, a reasoning model that *ignores* `temperature` and warns
+if you set it — so effort is the only knob that meaningfully changes
+its behaviour, and the sweep is the right way to characterise it. The
+judge is `gpt-5-chat`, a non-reasoning model pinned at
+`temperature=0`, so it stays a stable reference signal across the
+verifier-side sweep. Different model families on each side keeps them
+from sharing failure modes.
+
+There is no response cache and no fixed seed. Both would mask the
+drift the matrix is designed to surface.
+
+The honest summary of the eval story is: M1–M5 made the verifier and
+judge each *more inspectable*; the stability sweep is the first thing
+in this repo that actually measures something the user cares about
+(consistency, and whether higher effort buys it). Truth — the actual
+nutrition values — still requires a nutritionist, and that's listed
+in the README as future work, not pretended around.
