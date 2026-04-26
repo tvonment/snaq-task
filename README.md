@@ -13,6 +13,9 @@ Python does the arithmetic. The hard parts are unit-testable.
 - [DESIGN.md](DESIGN.md) — architecture, scope decisions, confidence rubric.
 - [NARRATIVE.md](NARRATIVE.md) — how the build actually went, including
   a critical self-review of what shipped.
+- [transcripts/](transcripts/) — raw VS Code Copilot Chat exports
+  (the receipts behind the narrative). See
+  [transcripts/README.md](transcripts/README.md).
 - [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md) — attribution for the
   bundled CIQUAL subset.
 - [eval/judge.py](eval/judge.py) / [eval/stability.py](eval/stability.py)
@@ -178,7 +181,7 @@ docker-compose, no frontend.
 | **Structured reasoning, digit-free** | `VerificationResult.reasoning` is a Pydantic model (`routing_decision` / `source_choice_rationale` / `variance_notes` / `correction_rationale`), and a `model_validator` rejects any numerals in the prose. Numbers belong in `discrepancies` and `proposed_correction`; prose is for *why*. |
 | **Structured trace for the judge** | Every lookup tool records the full `NutritionReference` it returned into `ToolCall.result_payload`. The LLM-as-judge can verify each `proposed_correction` value against the record the agent actually saw instead of trusting the agent's paraphrase. |
 | **Semantics catalogue** | A small pure `compare_semantics` tool ([logic/semantics.py](src/snaq_verify/logic/semantics.py)) names known definitional mismatches between sources (USDA "carbohydrate, by difference" vs CIQUAL `glucides`; USDA Atwater vs EU 1169/2011 energy factors; OFF salt vs sodium; Kjeldahl N-to-protein factor). The agent calls it before comparing cross-source references so delta-that's-actually-a-definition doesn't become a false `DISCREPANCY`. |
-| **tenacity + semaphore** | Exponential backoff with jitter on 429/5xx; bounded concurrency so one bad item can't kill the batch (`asyncio.gather(..., return_exceptions=True)`). |
+| **tenacity + semaphore** | Exponential backoff with jitter on 429/5xx; bounded concurrency. Each per-item task wraps the agent in `try/except` and converts failures to `status="ERROR"` so one bad item can't kill the batch. |
 
 ---
 
@@ -233,15 +236,35 @@ confidence-threshold gamble. See "Reviewer UI" under future work.
 
 ### Sample output
 
+The Summary table from a representative `medium`-effort run
+(`gpt-5-mini`, Instructions `v2`):
+
 ```markdown
 | # | Item | Status | Confidence |
 |---|------|--------|------------|
 | 1 | `chicken-breast-raw` — Chicken Breast, Skinless, Raw | ⚠️ DISCREPANCY | 0.80 |
+| 2 | `banana-raw` — Banana, Raw | ⚠️ DISCREPANCY | 0.80 |
+| 3 | `broccoli-raw` — Broccoli, Raw | ⚠️ DISCREPANCY | 0.80 |
+| 4 | `whole-milk` — Whole Milk, 3.5% Fat | ✅ VERIFIED | 0.80 |
+| 5 | `egg-whole-raw` — Egg, Whole, Raw | ⚠️ DISCREPANCY | 1.00 |
+| 6 | `almonds-raw` — Almonds, Raw | ⚠️ DISCREPANCY | 0.80 |
+| 7 | `oats-rolled-dry` — Oats, Rolled, Dry | ⚠️ DISCREPANCY | 0.80 |
+| 8 | `avocado-raw` — Avocado, Raw | ⚠️ DISCREPANCY | 0.80 |
 | 9 | `salmon-atlantic-farmed-raw` — Salmon, Atlantic, Farmed, Raw | 〰️ HIGH_VARIANCE | 0.40 |
+| 10 | `fage-total-0-greek-yogurt` — Total 0% Greek Yogurt, Plain | ⚠️ DISCREPANCY | 0.60 |
 | 11 | `white-bread` — White Bread | ⚠️ DISCREPANCY | 0.80 |
 ```
 
-Full example under [outputs/report.md](outputs/report.md).
+`outputs/` is gitignored on purpose — reports are generated artefacts,
+not source. Regenerate locally with:
+
+```bash
+uv run snaq-verify verify food_items.json --out outputs/
+```
+
+A full per-item details section (sources, field deltas, structured
+reasoning, full tool trace) is written alongside the Summary into
+`outputs/report.md`.
 
 ---
 
@@ -470,5 +493,5 @@ residential IP or a non-blocked host; your `USDA_API_KEY` is fine.
 | Working code, minimal setup | `uv sync && uv run snaq-verify verify food_items.json` |
 | README (setup, decisions, future work) | this file |
 | Design rationale | [DESIGN.md](DESIGN.md) |
-| Output on `food_items.json` | `outputs/report.{json,md}` |
-| AI conversation log | [NARRATIVE.md](NARRATIVE.md) + linked Claude share |
+| Output on `food_items.json` | `outputs/report.{json,md}` (regenerated locally; `outputs/` is gitignored) |
+| AI conversation log | [NARRATIVE.md](NARRATIVE.md) (curated retrospective) + [transcripts/](transcripts/) (raw Copilot Chat exports) + linked Claude share for the initial scoping conversation |
