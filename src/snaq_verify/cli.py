@@ -42,23 +42,21 @@ def verify(
             help="Comma-separated report formats (json, md).",
         ),
     ] = "json,md",
-    apply_corrections: Annotated[
-        bool,
-        typer.Option(
-            "--apply-corrections",
-            help="Emit food_items.corrected.json with accepted corrections merged in.",
-        ),
-    ] = False,
-    min_confidence: Annotated[
-        float,
-        typer.Option(
-            "--min-confidence",
-            help="Minimum confidence required to auto-apply a correction.",
-        ),
-    ] = 0.8,
     concurrency: Annotated[
         int | None,
         typer.Option("--concurrency", "-c", help="Override MAX_CONCURRENT_VERIFICATIONS."),
+    ] = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option(
+            "--reasoning-effort",
+            "-r",
+            help=(
+                "Forwarded to OpenAI-family reasoning models "
+                "(minimal|low|medium|high). Higher = more deliberation, "
+                "higher cost. Defaults to the deployment's default."
+            ),
+        ),
     ] = None,
     verbose: Annotated[
         int,
@@ -77,16 +75,22 @@ def verify(
 
     from snaq_verify.runner import run_verification
 
+    valid_efforts = {"minimal", "low", "medium", "high"}
+    if reasoning_effort is not None and reasoning_effort not in valid_efforts:
+        raise typer.BadParameter(
+            f"unknown reasoning effort {reasoning_effort!r}. "
+            f"Valid: {sorted(valid_efforts)}"
+        )
+
     requested_formats = tuple(f.strip() for f in formats.split(",") if f.strip())
     asyncio.run(
         run_verification(
             input_file=input_file,
             out_dir=out,
             formats=requested_formats,
-            apply_corrections=apply_corrections,
-            min_confidence=min_confidence,
             concurrency_override=concurrency,
             verbose=verbose,
+            reasoning_effort=reasoning_effort,
         )
     )
 

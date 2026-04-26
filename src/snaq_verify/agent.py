@@ -54,6 +54,13 @@ class Deps:
     trace: list[ToolCall] = field(default_factory=list)
 
 
+# Bumped whenever the INSTRUCTIONS / SYSTEM_PROMPT below change in a
+# way that could move grounded rate or status agreement. Surfaced in
+# the report header and the stability matrix metadata so before/after
+# matrices are comparable. Lightweight alternative to a prompt
+# framework -- at two prompts the stamp is enough.
+INSTRUCTIONS_VERSION = "v2"
+
 SYSTEM_PROMPT = (
     "Verify one food item's nutrition profile against authoritative sources "
     "by calling tools. Return a structured VerificationResult. Use the tools "
@@ -61,34 +68,55 @@ SYSTEM_PROMPT = (
 )
 
 INSTRUCTIONS = """\
-Tool routing:
+Tool routing and call order:
 - Barcode present: call lookup_off_by_barcode first; if no match, fall
   back to lookup_usda_by_name with data_type="Branded".
 - No barcode (generic food): call lookup_usda_by_name with
   data_type="Foundation" first, then "SR Legacy" if Foundation returns
   nothing. Also call lookup_ciqual_by_name for a second authoritative
   reference. Avoid the "Branded" dataset for generic foods.
-- Always call check_known_variance_tool before finalizing the status.
-  When the item matches a variance rule and the only discrepancies are
-  on its variable_fields, set status to HIGH_VARIANCE instead of
-  DISCREPANCY.
 - Always call validate_macro_consistency_tool on the provided nutrition.
-- For every reference you use, call assess_reference_completeness_tool
-  and calculate_discrepancy_tool. Do not do arithmetic yourself -- if a
-  reference looks incomplete, treat it as incomplete rather than
-  back-filling values.
-- When you compare references from different sources (USDA + CIQUAL,
-  USDA + OFF, etc.) call compare_semantics_tool first. Its notes
-  explain which field deltas are definitional rather than real (e.g.
-  USDA 'carbohydrate, by difference' includes fibre; CIQUAL
-  'glucides' does not). Use those notes to decide whether a delta
-  warrants a DISCREPANCY verdict.
+- For every reference you use, call assess_reference_completeness_tool.
+- When you will compare references from two different sources (USDA +
+  CIQUAL, USDA + OFF, OFF + CIQUAL), call compare_semantics_tool
+  BEFORE calculate_discrepancy_tool. The notes returned tell you which
+  field deltas between those two sources are definitional, not real.
+- Then call calculate_discrepancy_tool for each reference vs. provided.
+- Always call check_known_variance_tool before finalizing the status.
+
+Definitional fields are not discrepancies:
+- compare_semantics_tool returns notes with `affected_fields` (e.g.
+  carbohydrates_g, calories_kcal, sodium_mg, protein_g) and a `kind`
+  (carbs_definition, energy_definition, sodium_vs_salt,
+  protein_conversion).
+- For any field listed in `affected_fields` of a returned note, an
+  `exceeds_tolerance=true` result from calculate_discrepancy_tool is
+  EXPECTED and does NOT count toward a DISCREPANCY verdict between
+  those two sources. Treat the field as agreement-by-definition.
+- Only deltas on non-definitional fields (or on a field within a
+  single source) can drive a DISCREPANCY status.
+
+HIGH_VARIANCE is mandatory when the catalogue matches:
+- If check_known_variance_tool returns a VarianceInfo and every field
+  with `exceeds_tolerance=true` (after the definitional-field rule
+  above) is listed in `variable_fields`, the status MUST be
+  HIGH_VARIANCE. Not DISCREPANCY. No exceptions, even when the deltas
+  are large.
+- If at least one non-variable field also exceeds tolerance,
+  DISCREPANCY is still appropriate.
+
+Do not do arithmetic yourself. If a reference looks incomplete
+(assess_reference_completeness_tool says so), treat it as incomplete
+rather than back-filling values.
 
 Confidence scoring:
 - 1.0 when two independent sources (USDA and CIQUAL, or USDA and OFF)
-  agree within tolerance.
+  agree within tolerance on every non-definitional field.
+- 0.8 when two independent sources are consulted but disagree on at
+  least one non-definitional field beyond tolerance. Cap at 0.8 in
+  this case -- two-source consultation alone is not 1.0.
 - 0.8 for a single USDA Foundation / SR Legacy or CIQUAL match on a
-  complete reference.
+  complete reference (no second source available).
 - 0.6 for a single branded source with complete macros, OR any
   single-source match whose reference is flagged incomplete by
   assess_reference_completeness_tool. Cap confidence at 0.6 in that

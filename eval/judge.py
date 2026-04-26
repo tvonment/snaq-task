@@ -37,6 +37,33 @@ You are an evaluator. Read one food item's automated verification result
 and decide whether the stated reasoning is supported by the listed
 sources and tool trace.
 
+The verifier was given this rubric. Grade against it; do NOT impose a
+different one:
+
+- 1.0 only when two independent sources (USDA + CIQUAL, USDA + OFF, or
+  OFF + CIQUAL) agree within tolerance on every non-definitional field.
+- 0.8 when two independent sources are consulted but disagree on at
+  least one non-definitional field beyond tolerance. The verifier is
+  REQUIRED to cap at 0.8 in this case; do not raise rubric_violation
+  for a "two sources, conf < 1.0" pattern -- that is the rule.
+- 0.8 for a single USDA Foundation / SR Legacy / CIQUAL match on a
+  complete reference (no second source available).
+- 0.6 for a single branded source with complete macros, OR any
+  single-source match whose reference is flagged incomplete.
+- 0.4 for partial data or a high-variance catalogue hit.
+- 0.0 when no usable source is found.
+
+Definitional fields rule: when the trace contains a compare_semantics
+note covering a field (kinds: carbs_definition, energy_definition,
+sodium_vs_salt, protein_conversion), an exceeds_tolerance=true result
+on that field between those two sources is EXPECTED and does not count
+toward DISCREPANCY. Raise unit_mismatch only if the verifier ignored a
+note and narrated the field as a real discrepancy anyway.
+
+HIGH_VARIANCE rule: when check_known_variance returns a match and every
+exceeding field is in variable_fields, the status MUST be HIGH_VARIANCE.
+Raise variance_reasoning if the verifier picked DISCREPANCY anyway.
+
 Return a JudgeVerdict. Each entry in `concerns` must use one of these
 typed kinds:
 
@@ -45,13 +72,12 @@ typed kinds:
   listed source or tool result.
 - correction_provenance: the proposed_correction contains values that
   cannot be traced back to a cited source.
-- unit_mismatch: two sources are compared without accounting for a
-  definitional difference (e.g. USDA "carbohydrate, by difference"
-  vs CIQUAL "available carbs", kJ vs kcal).
+- unit_mismatch: the verifier ignored a compare_semantics note and
+  treated a definitional difference as a real discrepancy.
 - wrong_reference: the chosen reference record is the wrong food.
-- rubric_violation: the confidence score violates the stated rubric
-  (two-source match but confidence < 1.0, branded with complete macros
-  but confidence > 0.6, etc.).
+- rubric_violation: the confidence score violates the rubric above.
+  Do NOT raise this merely because two sources were consulted and
+  confidence is below 1.0 -- the rubric explicitly allows capping.
 - variance_reasoning: natural-variance items were mishandled (e.g.
   farmed salmon flagged as DISCREPANCY rather than HIGH_VARIANCE).
 - nitpick: style or phrasing feedback that is NOT a grounding problem.

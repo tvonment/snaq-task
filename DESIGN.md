@@ -61,7 +61,7 @@ food_items.json
 │ report.py                                               │
 │   • report.json   (machine-readable, full trace)        │
 │   • report.md     (human summary, status table)         │
-│   • food_items.corrected.json  (--apply-corrections)    │
+
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -278,9 +278,11 @@ In a real SNAQ integration the CLI's JSON report would feed a reviewer
 queue: a nutritionist sees flagged items with proposed corrections and
 confidence, accepts or edits, and writes the result back to the product
 database. We deliberately did not build that UI here — the agent is the
-interesting part; the review UI is a standard CRUD screen. The CLI does
-ship `--apply-corrections --min-confidence <x>` which emits a corrected
-`food_items.json`, which is the programmatic equivalent.
+interesting part; the review UI is a standard CRUD screen. We also
+deliberately did **not** ship a `--apply-corrections` flag: merging
+proposed nutrition values back into product data on a confidence
+threshold is exactly the place where this kind of agent should *not*
+act unattended. Corrections live in `report.json` for a human to act on.
 
 ## 11. Deliverables mapping
 

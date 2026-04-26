@@ -170,6 +170,11 @@ class StabilityMatrix(BaseModel):
     runs: int = Field(
         description="K -- number of repeated runs *per effort level*."
     )
+    instructions_version: str | None = Field(
+        default=None,
+        description="agent.INSTRUCTIONS_VERSION at the time of the sweep. "
+        "Lets us compare matrices across instruction revisions.",
+    )
     summary: list[EffortSummary]
     blocks: list[EffortBlock]
 
@@ -395,6 +400,7 @@ def build_matrix(
     runs_by_effort: dict[str, list[dict]],
     judge_runs_by_effort: dict[str, list[dict]] | None = None,
     generated_at: str | None = None,
+    instructions_version: str | None = None,
 ) -> StabilityMatrix:
     """Aggregate an efforts x K-runs sweep into a single matrix."""
     if not runs_by_effort:
@@ -423,6 +429,7 @@ def build_matrix(
         input_file=input_file,
         efforts=efforts,
         runs=K,
+        instructions_version=instructions_version,
         summary=summary,
         blocks=blocks,
     )
@@ -445,6 +452,8 @@ def render_matrix_markdown(matrix: StabilityMatrix) -> str:
     lines.append(f"- Input: `{matrix.input_file}`")
     lines.append(f"- Efforts swept: {', '.join(f'`{e}`' for e in matrix.efforts)}")
     lines.append(f"- Runs per effort: **{matrix.runs}**")
+    if matrix.instructions_version is not None:
+        lines.append(f"- Instructions: `{matrix.instructions_version}`")
     lines.append("")
     lines.append(
         "Stability measures whether the agent agrees with *itself* "
@@ -594,7 +603,13 @@ async def run_stability(
 
     # Lazy imports: keeps CLI --help fast and avoids pulling pydantic-ai
     # / openai client at module import time.
-    from snaq_verify.runner import run_verification
+    from snaq_verify.config import Settings
+    from snaq_verify.runner import _configure_logging, run_verification
+
+    # Configure logging up front so the sweep-level INFO lines
+    # (efforts, output dir, per-run progress) show on the console
+    # before the first run_verification call re-configures it.
+    _configure_logging(Settings.load().log_level, verbose=verbose)
 
     stability_dir = out_dir / "stability"
     stability_dir.mkdir(parents=True, exist_ok=True)
@@ -603,12 +618,23 @@ async def run_stability(
     judge_runs_by_effort: dict[str, list[dict]] = {}
 
     total_runs = len(efforts) * runs
+    _LOG.info(
+        "Stability sweep: %d effort level(s) x %d run(s) = %d verifier run(s)%s",
+        len(efforts),
+        runs,
+        total_runs,
+        " (+ judge)" if include_judge else "",
+    )
+    _LOG.info("  efforts: %s", ", ".join(efforts))
+    _LOG.info("  output:  %s", stability_dir)
+
     completed = 0
     for effort in efforts:
         effort_dir = stability_dir / effort
         runs_by_effort[effort] = []
         if include_judge:
             judge_runs_by_effort[effort] = []
+        _LOG.info("=== effort=%s (K=%d) ===", effort, runs)
         for k in range(1, runs + 1):
             completed += 1
             run_dir = effort_dir / f"run_{k}"
@@ -625,8 +651,6 @@ async def run_stability(
                 input_file=input_file,
                 out_dir=run_dir,
                 formats=("json", "md"),
-                apply_corrections=False,
-                min_confidence=0.8,
                 concurrency_override=concurrency_override,
                 verbose=verbose,
                 reasoning_effort=effort,
@@ -638,6 +662,15 @@ async def run_stability(
                 from eval.judge import run_judge
 
                 judge_path = run_dir / "judge.json"
+                _LOG.info(
+                    "Stability [%d/%d] effort=%s run=%d/%d judging -> %s",
+                    completed,
+                    total_runs,
+                    effort,
+                    k,
+                    runs,
+                    judge_path,
+                )
                 await run_judge(
                     report_path=run_dir / "report.json",
                     out_path=judge_path,
@@ -646,11 +679,16 @@ async def run_stability(
                 judge_runs_by_effort[effort].append(
                     json.loads(judge_path.read_text())
                 )
+        _LOG.info("=== effort=%s complete (%d run(s)) ===", effort, runs)
+
+    _LOG.info("Aggregating stability matrix across %d effort level(s)", len(efforts))
+    from snaq_verify.agent import INSTRUCTIONS_VERSION
 
     matrix = build_matrix(
         input_file=str(input_file),
         runs_by_effort=runs_by_effort,
         judge_runs_by_effort=judge_runs_by_effort if include_judge else None,
+        instructions_version=INSTRUCTIONS_VERSION,
     )
     (stability_dir / "matrix.json").write_text(
         json.dumps(matrix.model_dump(), indent=2)

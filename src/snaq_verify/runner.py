@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from pathlib import Path
@@ -59,8 +58,6 @@ async def run_verification(
     input_file: Path,
     out_dir: Path,
     formats: tuple[str, ...],
-    apply_corrections: bool,
-    min_confidence: float,
     concurrency_override: int | None,
     verbose: int = 0,
     reasoning_effort: str | None = None,
@@ -143,9 +140,6 @@ async def run_verification(
         reasoning_effort=reasoning_effort,
     )
 
-    if apply_corrections:
-        _write_corrected(items, results, min_confidence, out_dir)
-
     _summarise(results, out_dir)
 
 
@@ -178,33 +172,6 @@ def _log_item_progress(
         tool_calls,
         elapsed_s,
     )
-
-
-def _write_corrected(
-    items: list[FoodItem],
-    results: list[VerificationResult],
-    min_confidence: float,
-    out_dir: Path,
-) -> None:
-    """Emit ``food_items.corrected.json`` with high-confidence corrections merged in."""
-    by_id = {r.item_id: r for r in results}
-    corrected: list[dict] = []
-    applied = 0
-    for item in items:
-        data = item.model_dump()
-        res = by_id.get(item.id)
-        if (
-            res is not None
-            and res.status == "DISCREPANCY"
-            and res.proposed_correction is not None
-            and res.confidence >= min_confidence
-        ):
-            data["nutrition_per_100g"] = res.proposed_correction.model_dump()
-            applied += 1
-        corrected.append(data)
-    path = out_dir / "food_items.corrected.json"
-    path.write_text(json.dumps(corrected, indent=2))
-    _LOG.info("Wrote %s with %d correction(s) applied", path, applied)
 
 
 def _summarise(results: list[VerificationResult], out_dir: Path) -> None:

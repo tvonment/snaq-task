@@ -11,6 +11,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from snaq_verify.agent import INSTRUCTIONS_VERSION
 from snaq_verify.models import FoodItem, ToolCall, VerificationResult
 
 # ---------------------------------------------------------------------------
@@ -73,6 +74,7 @@ def _write_json(
         "generated_at": generated_at,
         "model_deployment": model,
         "reasoning_effort": reasoning_effort,
+        "instructions_version": INSTRUCTIONS_VERSION,
         "items": rows,
     }
     (out_dir / "report.json").write_text(json.dumps(doc, indent=2, default=str))
@@ -100,6 +102,7 @@ def _write_markdown(
     lines.append(f"- Model: `{model}`")
     if reasoning_effort:
         lines.append(f"- Reasoning effort: `{reasoning_effort}`")
+    lines.append(f"- Instructions: `{INSTRUCTIONS_VERSION}`")
     lines.append("")
 
     lines.append("## Summary\n")

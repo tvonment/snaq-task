@@ -55,8 +55,8 @@ Reports are written to `outputs/report.{json,md}`.
 uv run snaq-verify verify food_items.json \
     [--out outputs/] \
     [--format json,md] \
-    [--apply-corrections --min-confidence 0.8] \
     [--concurrency 5] \
+    [--reasoning-effort minimal|low|medium|high] \
     [-v | -vv]
 
 uv run snaq-verify judge outputs/report.json \
@@ -103,11 +103,17 @@ falls straight out of the same matrix. Cost note: the default sweep
 is 4 efforts × 3 runs × 11 items = 132 verifier calls (+132 judge
 calls); narrow it with `--efforts low,medium` while iterating.
 
-`--apply-corrections` writes `outputs/food_items.corrected.json` with every
-proposed correction (above `--min-confidence`) merged into the originals.
-`-v` raises `snaq_verify` to DEBUG; `-vv` also re-enables the raw
-`httpx` / `openai` / `pydantic-ai` INFO firehose when you need to see
-every HTTP call.
+`--reasoning-effort` is forwarded to OpenAI-family reasoning models
+(gpt-5, o-series). It's a per-run override for one-shot verifications;
+`stability` sweeps efforts independently. `-v` raises `snaq_verify` to
+DEBUG; `-vv` also re-enables the raw `httpx` / `openai` / `pydantic-ai`
+INFO firehose when you need to see every HTTP call.
+
+Reports stamp `Instructions: vN` in the header (and
+`instructions_version` in `report.json` / `matrix.json`). Bumping
+`INSTRUCTIONS_VERSION` in [src/snaq_verify/agent.py](src/snaq_verify/agent.py)
+is how revised prompts get tracked across stability runs without a
+full prompt-management framework — at two prompts the stamp is enough.
 
 ### Tests
 
@@ -116,10 +122,11 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-86 unit tests covering pure logic, HTTP clients (mocked via `respx`,
+94 unit tests covering pure logic, HTTP clients (mocked via `respx`,
 including 429 + `Retry-After` handling), structured-reasoning validators,
-the semantics catalogue, and the judge concern-kind aggregation. No
-network required.
+the semantics catalogue, the judge concern-kind aggregation, the
+stability aggregator, and the v2 instruction rules. No network
+required.
 
 ---
 
@@ -143,7 +150,7 @@ pydantic-ai Agent  (Azure AI Foundry, gpt-5-mini)
 │  compare_semantics              (pure)              │
 └─────────────────────────────────────────────────────┘
     ↓
-report.{json,md}   +   food_items.corrected.json (optional)
+report.{json,md}
     ↓ (optional, separate command)
 eval/judge.py  →  outputs/judge.json
 ```
@@ -219,10 +226,10 @@ The agent writes two reports per run:
 - **`report.md`** — human summary table + details section per
   non-`VERIFIED` item.
 
-With `--apply-corrections`, also:
-
-- **`food_items.corrected.json`** — originals with high-confidence
-  corrections merged in.
+Proposed corrections live inside `report.json` (per-field, with
+`reference` + `confidence`). There is **no** auto-apply flag: merging
+corrections back into product data is a human-review step, not a
+confidence-threshold gamble. See "Reviewer UI" under future work.
 
 ### Sample output
 
@@ -235,6 +242,95 @@ With `--apply-corrections`, also:
 ```
 
 Full example under [outputs/report.md](outputs/report.md).
+
+---
+
+## Inputs the customer can change
+
+The agent works against three sources, with different coverage
+properties when `food_items.json` is replaced with the customer's own
+file. **Read this before swapping the input.**
+
+| Source | How it's accessed | Coverage on a customer file |
+|---|---|---|
+| **USDA FoodData Central** | Live HTTPS API (`api.nal.usda.gov`) | Anything FDC search resolves. No coverage gap from changing the input file. |
+| **Open Food Facts** | Live HTTPS API (`world.openfoodfacts.org`) | Any valid EAN/UPC barcode the customer supplies. **Not bound to our sample** \u2014 the OFF query is per-barcode, not a local subset. |
+| **ANSES CIQUAL** | Bundled local subset under [data/ciqual_subset.json](data/ciqual_subset.json), licensed per [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md) | **Curated for the eleven items in the provided `food_items.json`.** A customer-supplied file with new generic foods will silently miss CIQUAL coverage and fall back to a single-source verdict (capped at confidence 0.8). |
+
+The CIQUAL limitation is the only one that meaningfully affects a
+different input file. Full CIQUAL ingest is listed in "What I would do
+differently" below.
+
+---
+
+## Stability findings
+
+The bonus eval layer ([eval/stability.py](eval/stability.py)) sweeps
+`reasoning_effort` x K runs and aggregates a matrix at
+[outputs/stability/matrix.md](outputs/stability/matrix.md). At n=11
+with no hand-labelled ground truth, the honest signals are
+**consistency** (does the agent agree with itself across runs?) and
+**groundedness** (does the LLM-as-judge accept the verifier's
+reasoning as supported by the trace?).
+
+The first sweep produced this baseline at `Instructions: v1`,
+3 runs per effort:
+
+| Effort | Status agree | Conf mean | Grounded rate | Kind Jaccard | Tool calls/run |
+|---|---|---|---|---|---|
+| `minimal` | 88% | 0.72 | 33% | 0.60 | 7.5 |
+| `low` | 91% | 0.73 | 27% | 0.70 | 8.2 |
+| `medium` | 94% | 0.76 | 27% | 0.61 | 8.8 |
+| `high` | **100%** | 0.78 | 33% | 0.72 | 8.9 |
+
+The diagnostic reading: **higher reasoning effort buys consistency
+but not grounding.** Status agreement scales with effort (88\u2192100%);
+grounded rate plateaus at ~30% across all four levels. That's a
+strong signal the residual judge concerns aren't "the agent didn't
+think long enough" \u2014 they're tool-shape and instruction problems.
+
+Inspecting the judge concerns surfaced four recurring patterns:
+`unit_mismatch` (USDA-vs-CIQUAL carbs/energy treated as discrepancy
+despite being definitional), `wrong_reference` (USDA picks the wrong
+food variant, e.g. "Egg, frozen, pasteurized" for raw egg),
+`rubric_violation` (verifier and judge disagreed on what the
+confidence rubric actually says), and `variance_reasoning`
+(catalogue-matched items still narrated as DISCREPANCY). Three of the
+four are addressable by tightening the agent and judge instructions;
+the fourth (`wrong_reference`) needs a tool-shape change.
+
+I shipped the instruction tightening as `Instructions: v2`:
+
+- Mandate `compare_semantics_tool` *before* `calculate_discrepancy_tool`
+  for cross-source comparisons.
+- State explicitly that fields covered by a `compare_semantics` note
+  do not count toward DISCREPANCY \u2014 the definitional rule is no
+  longer narrative, it's a hard contract.
+- Cap confidence at 0.8 when two sources disagree on a non-definitional
+  field beyond tolerance (closes the rubric ambiguity).
+- Make HIGH_VARIANCE *mandatory* when the catalogue matches and every
+  exceeding field is in `variable_fields` \u2014 no exceptions.
+- Realign the judge prompt to grade against that exact rubric so
+  verifier and judge stop talking past each other.
+
+Re-running 3 runs at `medium` effort, `Instructions: v2`:
+
+| Metric | v1 (medium) | v2 (medium) | Delta |
+|---|---|---|---|
+| Status agreement | 94% | **100%** | +6 pp |
+| Grounded rate | 27% | **82%** | **+55 pp** |
+| Grounded agreement | 91% | 94% | +3 pp |
+| Kind Jaccard | 0.61 | **0.88** | +0.27 |
+| Tool calls / run | 8.8 | 9.3 | +0.5 |
+| Confidence mean | 0.76 | 0.75 | -0.01 |
+
+Grounded rate triples at the same effort level; concern-kind sets
+become highly stable across runs (Jaccard 0.61\u20920.88), and `medium`
+now matches what previously required `high`. The two items still
+ungrounded across runs are `egg-whole-raw` and `avocado-raw` \u2014 both
+exactly the failure modes the "Future work" backlog targets (top-N
+USDA candidates with match-quality, and stricter mechanical variance
+enforcement).
 
 ---
 
@@ -274,14 +370,55 @@ tests/             pytest + pytest-asyncio + respx — no network
 
 ## What I would do differently with more time
 
-1. **Hand-labelled ground truth.** The stability matrix measures
+The "Stability findings" section above shows that v2 instructions
+closed most of the grounding gap, but two failure modes survived
+across runs (`egg-whole-raw`, `avocado-raw`). Items 1\u20133 below are the
+**direct Phase 2 backlog** that would address them; items 4+ are the
+broader future work.
+
+1. **Top-N USDA candidates with `match_quality`.** Today
+   `lookup_usda_by_name` returns the first hit. The agent has no
+   recourse when USDA picks a bad variant ("Egg, frozen, pasteurized"
+   for raw egg). Returning N=3 candidates each tagged with a
+   `match_quality` enum (`exact` / `close` / `weak` / `wrong_form`)
+   would let the agent reject obvious mismatches mechanically instead
+   of relying on the LLM to spot them.
+2. **Definitional-aware `calculate_discrepancy`.** Move the
+   "definitional fields don't count" rule from prompt to code: the
+   tool would consult the same semantics catalogue and flag fields as
+   `is_definitional=True` so they never bubble up as DISCREPANCY in
+   the first place. Removes the rule from a place the LLM can forget
+   it.
+3. **`propose_correction_from_reference_tool`.** A typed tool that
+   takes a `NutritionReference` and emits a `Correction` keyed by
+   that exact source. Provenance becomes structural rather than
+   narrative \u2014 the judge can't ding the agent for a missing
+   `reference` field if the field is mandatory in the tool signature.
+4. **Expanded variance catalogue.** Today the catalogue is small and
+   manual. Items like generic broccoli or white bread bounce between
+   `VERIFIED` and `DISCREPANCY` runs because their natural variance
+   isn't encoded. A literature-backed catalogue (with cited bands)
+   would convert several brittle items into mechanically-correct
+   `HIGH_VARIANCE` verdicts.
+5. **Optional third source for cross-check.** USDA + CIQUAL is a
+   strong pair for whole foods, but adding e.g. EuroFIR / FoodB as a
+   *tiebreaker* (only consulted when the first two disagree on a
+   non-definitional field) would push the still-ungrounded items off
+   the single-source-cap floor of 0.8.
+6. **Prompt-versioning tooling at scale.** The current
+   `INSTRUCTIONS_VERSION` stamp is a deliberate two-line solution \u2014
+   honest at two prompts, useless at fifty. Past ~5 prompts I'd reach
+   for a real prompt registry (Promptfoo, LangSmith, or a hand-rolled
+   `prompts/` directory with hashing) so stability sweeps can compare
+   N versions, not just two.
+7. **Hand-labelled ground truth.** The stability matrix measures
    whether the agent agrees with *itself* across runs; it cannot
    measure whether the agent is *right*. A small nutritionist-reviewed
    golden set (say 20 items with expected status + kcal bands) would
    let the judge and the stability harness score correctness, not just
    consistency. Building it honestly requires a domain expert, not
    another LLM, which is why it isn't in the box.
-2. **A richer LLM-as-judge.** The current judge ships in
+8. **A richer LLM-as-judge.** The current judge ships in
    [eval/judge.py](eval/judge.py) with a typed 8-kind concern
    taxonomy and a "different deployment by default" env var
    (`AZURE_OPENAI_JUDGE_DEPLOYMENT`). With more time it would
@@ -289,31 +426,31 @@ tests/             pytest + pytest-asyncio + respx — no network
    snapshots), feed disagreements into a human review queue, and run
    self-consistency (K-sample majority voting) when a single-run
    judge verdict sits on the fence.
-2. **Full CIQUAL ingest.** The repo bundles a curated English-labelled
+9. **Full CIQUAL ingest.** The repo bundles a curated English-labelled
    subset under [data/ciqual_subset.json](data/ciqual_subset.json) with
    attribution in [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md).
    Good enough to demonstrate two-source agreement for the sample
    items; a real integration would ingest the full ANSES dataset and
    build a proper name/alias index (fuzzy matching, synonyms).
-3. **Better unit handling for liquids.** Density table is inlined; a
-   real integration wants per-category density data and a clearer
-   `unit_mismatch` reporting convention (see [DESIGN.md §7](DESIGN.md)).
-4. **Reviewer UI.** In production the JSON report would drive a review
-   queue where a nutritionist accepts or edits each proposed
-   correction, and the accepted result is written back to the product
-   database. That's a standard CRUD screen — the agent is the
-   interesting part, which is why the demo stops at the JSON + Markdown
-   step.
-5. **Branded-food matching heuristics.** Current USDA Branded fallback
-   takes the first hit; a real system would score candidates by brand +
-   name token overlap before trusting the match.
-6. **Structured logging + per-item cost/latency budget.** The console
-   shows a concise one-line-per-item progress view and tool-call
-   latencies live in the JSON report, but there's no per-run cost
-   accounting yet.
-7. **Retry the model on tool-argument validation errors.** Rare, but
-   when the LLM emits a malformed tool arg, pydantic-ai raises — the
-   runner currently turns it into `ERROR` without a retry.
+10. **Better unit handling for liquids.** Density table is inlined; a
+    real integration wants per-category density data and a clearer
+    `unit_mismatch` reporting convention (see [DESIGN.md §7](DESIGN.md)).
+11. **Reviewer UI.** In production the JSON report would drive a review
+    queue where a nutritionist accepts or edits each proposed
+    correction, and the accepted result is written back to the product
+    database. That's a standard CRUD screen \u2014 the agent is the
+    interesting part, which is why the demo stops at the JSON +
+    Markdown step.
+12. **Branded-food matching heuristics.** Current USDA Branded fallback
+    takes the first hit; a real system would score candidates by brand
+    + name token overlap before trusting the match.
+13. **Structured logging + per-item cost/latency budget.** The console
+    shows a concise one-line-per-item progress view and tool-call
+    latencies live in the JSON report, but there's no per-run cost
+    accounting yet.
+14. **Retry the model on tool-argument validation errors.** Rare, but
+    when the LLM emits a malformed tool arg, pydantic-ai raises \u2014 the
+    runner currently turns it into `ERROR` without a retry.
 
 ---
 

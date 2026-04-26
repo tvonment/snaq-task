@@ -23,7 +23,7 @@ pydantic-ai Agent  (Azure OpenAI, temperature=0)
     ↓ typed tool calls
 Tools: usda / openfoodfacts / ciqual / validation / discrepancy / variance / semantics / completeness
     ↓
-report.{json,md}   +   food_items.corrected.json (optional)
+report.{json,md}
 ```
 
 No frontend. No MCP server. No docker-compose. No SSE. No response
@@ -113,13 +113,13 @@ LOG_LEVEL=INFO
 uv run snaq-verify food_items.json \
     [--out outputs/] \
     [--format json,md] \
-    [--apply-corrections --min-confidence 0.8] \
     [--concurrency 5]
 ```
 
-`--apply-corrections` emits `food_items.corrected.json` containing the
-original items with accepted corrections merged in. Only corrections with
-`confidence >= --min-confidence` are applied.
+Corrections live inside `report.json` (per-field, with `reference` +
+`confidence`). There is no auto-apply flag — merging corrections back
+into product data is a human-review step, not a confidence-threshold
+gamble.
 
 ---
 
