@@ -4,6 +4,13 @@ SNAQ asks for the AI conversation log alongside the code. How
 the project actually unfolded, where the AI helped, where it pulled
 toward bad ideas, and where I overruled it.
 
+> **Note:** this is a working diary written across the build. Some
+> sections describe states the repo has since moved past (the SQLite
+> cache, the HTML report, `eval/golden.py`, and intermediate test
+> counts). For the current state of the code, read [README.md](README.md)
+> and [DESIGN.md](DESIGN.md) — the diary is preserved as-is so the
+> sequence of decisions remains legible.
+
 ---
 
 ## 1. Architectural pushback before any code
@@ -108,13 +115,13 @@ sometimes the right move is "fix the actual root cause, not the
 symptom." We reverted to Chat Completions once Prompt Shields was
 addressed.
 
-**USDA WAF.** Every USDA call from the dev-container returned HTTP 403,
-including requests with `DEMO_KEY`. The AI initially tried to "fix" this
-by blaming the API key. I ran a `curl` directly and confirmed the
-response was a plain nginx 403 — not api.data.gov's JSON rate-limit
-body — which meant the Codespaces egress IP range is on a denylist. No
-code fix is possible; the workaround is to run locally. This is now
-documented in the README.
+**USDA 403 from the dev-container.** Every USDA call from the
+Codespaces dev-container returned HTTP 403, including with `DEMO_KEY`.
+The response was a plain nginx 403, not api.data.gov's JSON
+rate-limit body, which is consistent with the Codespaces egress range
+being filtered upstream rather than the key being wrong. No code fix
+is possible from our side; the workaround — documented in the README
+— is to run locally.
 
 ## 5. Where the AI earned its keep
 
@@ -169,6 +176,15 @@ One new test (`test_barcode_lookup_honors_retry_after_on_429`) patches
 `asyncio.sleep` and asserts the 2-second hint is honoured; the full
 suite is now 39 green.
 
+Worth naming honestly: the polite-client work wasn't only prompted by
+OFF's 429s. A few `Agent failed for item …` errors during a parallel
+11-item run were our own Azure deployment hitting its TPM ceiling —
+so part of the same turn was raising the deployment's tokens-per-
+minute quota in the portal, not just adding retries in code. The
+reason `--concurrency` defaults low and the per-host semaphore caps
+at 2 is that the bottleneck was as often *upstream of us* as it was
+on the public APIs.
+
 Lesson reinforced: the right shape of a change like this is "ask for a
 plan, skim it, approve, then let it run". The plan I got back named the
 right trade-offs (Retry-After cap, no `rich`, per-host vs. global
@@ -208,8 +224,11 @@ The two AI conversations that produced this repo are:
 
 Before calling it done, I had Copilot re-audit the repo from scratch
 against the brief \u2014 no assumption of correctness, looking for things
-worth fixing. Three findings were worth acting on, and one was worth
-explicitly deferring.
+worth fixing. (Late in the session I also pasted the same brief plus
+the repo into Codex for a second outside opinion; that pass mostly
+confirmed the Copilot critique and added a couple of doc-vs-code
+drift catches that fed into the final polish.) Three findings were
+worth acting on, and one was worth explicitly deferring.
 
 **Finding 1 \u2014 USDA was sometimes sending back kcal = 0.**
 Some FDC Foundation records ship energy only as kJ (nutrient 1062), not
@@ -414,8 +433,10 @@ absurd; a stamp is honest. Past about five prompts I'd reach for a
 real prompt-management framework. That tradeoff is now explicit in the
 README's future-work list rather than implicit in the code.
 
-The numbers came out clean. At `medium` effort, three runs, v1 → v2:
-status agreement 94% → 100%, grounded rate **27% → 82%**,
+The numbers came out clean. At `medium` effort, three runs, v1 → v2
+(numbers from [outputs/stability/matrix.md](outputs/stability/matrix.md)
+for v2; v1 baseline from the prior matrix run that motivated this
+phase): status agreement 94% → 100%, grounded rate **27% → 82%**,
 concern-kind Jaccard 0.61 → 0.88, tool calls per run barely moved
 (8.8 → 9.3), confidence essentially unchanged. `medium` now matches
 what previously required `high`. The two items still ungrounded
