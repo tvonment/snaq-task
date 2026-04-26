@@ -12,16 +12,19 @@ short, prescriptive version for code generation.
 
 A single-package Python CLI that verifies nutrition data in
 `food_items.json` against authoritative sources (USDA FoodData Central,
-Open Food Facts) using a `pydantic-ai` agent with typed tools.
+Open Food Facts, ANSES CIQUAL) using a `pydantic-ai` agent with typed
+tools. Plus a separate `judge` subcommand (LLM-as-judge) and a
+`stability` subcommand (sweep `reasoning_effort` × K runs).
 
 ```
 food_items.json
     ↓
-runner  (asyncio.gather + Semaphore)
+runner  (asyncio.gather + Semaphore, per-task try/except)
     ↓ per item
-pydantic-ai Agent  (Azure OpenAI, temperature=0)
+pydantic-ai Agent  (Azure AI Foundry v1 API, gpt-5-mini)
     ↓ typed tool calls
-Tools: usda / openfoodfacts / ciqual / validation / discrepancy / variance / semantics / completeness
+Tools: usda / openfoodfacts / ciqual / validation / discrepancy /
+       variance / semantics / completeness
     ↓
 report.{json,md}
 ```
@@ -39,36 +42,52 @@ snaq-task/
 ├── .github/copilot-instructions.md   ← this file
 ├── DESIGN.md                         ← design rationale
 ├── README.md                         ← how to run, decisions, future work
+├── NARRATIVE.md                      ← working diary / AI session retrospective
 ├── food_items.json                   ← provided input
 ├── pyproject.toml                    ← uv-managed, Python 3.12+
 ├── .env.example
+├── data/
+│   ├── ciqual_subset.json            ← bundled CIQUAL subset (11 items)
+│   └── CIQUAL_LICENSE.md             ← attribution
 ├── src/snaq_verify/
 │   ├── __main__.py                   ← CLI entrypoint
-│   ├── cli.py                        ← argparse / typer
+│   ├── cli.py                        ← typer (verify / judge / stability)
+│   ├── config.py                     ← env-loaded Settings
 │   ├── models.py                     ← all Pydantic models
-│   ├── agent.py                      ← pydantic-ai Agent + tool registrations
-│   ├── runner.py                     ← gather + semaphore orchestration
+│   ├── agent.py                      ← build_agent factory + tool registrations + INSTRUCTIONS_VERSION
+│   ├── runner.py                     ← gather + semaphore + per-task try/except
+│   ├── report.py                     ← JSON + Markdown writers
 │   ├── clients/
-│   │   ├── usda.py                   ← httpx + tenacity + cache
-│   │   └── openfoodfacts.py
-│   ├── logic/
-│   │   ├── validation.py             ← pure: macro consistency
-│   │   ├── discrepancy.py            ← pure: per-field deltas
-│   │   ├── variance.py               ← pure: known-variance catalogue
-│   │   └── normalization.py          ← USDA/OFF → NutritionReference
-│   ├── cache.py                      ← SQLite response cache
-│   └── report.py                     ← JSON + Markdown + static HTML
+│   │   ├── _retry.py                 ← shared tenacity config (Retry-After honoured)
+│   │   ├── usda.py                   ← FDC search + relevance gate + kcal fallback
+│   │   ├── openfoodfacts.py          ← per-client polite semaphore
+│   │   └── ciqual.py                 ← bundled subset, alias matching
+│   └── logic/
+│       ├── validation.py             ← pure: macro consistency
+│       ├── discrepancy.py            ← pure: per-field deltas
+│       ├── variance.py               ← pure: known-variance catalogue
+│       ├── completeness.py           ← pure: is reference record trustworthy?
+│       ├── semantics.py              ← pure: cross-source definitional mismatches
+│       └── constants.py              ← named tolerances, no magic numbers
 ├── tests/
-│   ├── test_validation.py            ← table-driven
+│   ├── test_validation.py            ← pure logic, table-driven
 │   ├── test_discrepancy.py
 │   ├── test_variance.py
-│   ├── test_normalization.py
+│   ├── test_completeness.py
+│   ├── test_semantics.py
+│   ├── test_reasoning.py             ← digit-free reasoning validators
+│   ├── test_instructions.py          ← v2 instruction rules
+│   ├── test_judge_concerns.py        ← typed judge concern enum
+│   ├── test_stability.py             ← stability aggregator
+│   ├── test_smoke.py                 ← CLI help + flag wiring
 │   ├── test_usda_client.py           ← respx
-│   ├── test_off_client.py            ← respx
+│   ├── test_off_client.py            ← respx (incl. Retry-After on 429)
+│   ├── test_usda_relevance.py        ← FDC relevance gate + kcal fallback
+│   ├── test_ciqual_client.py
 │   └── fixtures/                     ← API response samples
 ├── eval/
-│   ├── golden.py                     ← expected statuses for sample items
-│   └── judge.py                      ← LLM-as-judge over agent reasoning
+│   ├── judge.py                      ← LLM-as-judge over agent reasoning + trace
+│   └── stability.py                  ← sweep reasoning_effort × K runs; aggregate matrix
 └── outputs/                          ← generated reports (gitignored)
 ```
 
@@ -96,24 +115,33 @@ snaq-task/
 Never hardcode. `.env.example` documents them all.
 
 ```
-AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/openai/v1/
 AZURE_OPENAI_API_KEY=...
 AZURE_OPENAI_DEPLOYMENT=gpt-5-mini
-AZURE_OPENAI_API_VERSION=2024-10-21
+AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-5-chat   # optional; falls back to deployment
 USDA_API_KEY=...
 MAX_CONCURRENT_VERIFICATIONS=5
 LOG_LEVEL=INFO
 ```
+
+Foundry's 2026 v1 path (`/openai/v1/`) does NOT accept `?api-version=...`,
+so the agent uses plain `openai.AsyncOpenAI` with the Foundry endpoint as
+`base_url`, NOT `AsyncAzureOpenAI`. See [src/snaq_verify/agent.py](../src/snaq_verify/agent.py).
 
 ---
 
 ## CLI contract
 
 ```
-uv run snaq-verify food_items.json \
-    [--out outputs/] \
-    [--format json,md] \
-    [--concurrency 5]
+uv run snaq-verify verify food_items.json \
+    [--out outputs/] [--format json,md] [--concurrency 5] \
+    [--reasoning-effort minimal|low|medium|high] [-v|-vv]
+
+uv run snaq-verify judge outputs/report.json \
+    [--out outputs/judge.json] [--concurrency 3]
+
+uv run snaq-verify stability food_items.json \
+    [--runs 3] [--efforts minimal,low,medium,high] [--no-judge]
 ```
 
 Corrections live inside `report.json` (per-field, with `reference` +
@@ -145,52 +173,41 @@ gamble.
 
 ### pydantic-ai agent
 
-- Single `Agent` instance, configured once at import.
+- Single `build_agent(settings, reasoning_effort)` factory in
+  [src/snaq_verify/agent.py](../src/snaq_verify/agent.py); the runner
+  calls it once per run so `reasoning_effort` and Azure settings are
+  injected without import-time globals.
 - Output type = `VerificationResult`.
 - Tools registered via `@agent.tool` with typed params and return values.
-- System prompt is short, declarative, and lists the routing rules
-  (barcode → OFF; generic → USDA Foundation/SR Legacy; known variance →
-  `HIGH_VARIANCE`).
+- System prompt is short and neutrally phrased (Foundry's Prompt
+  Shields treats assertive "You MUST NOT..." as jailbreak attempts).
+  Detailed routing/rubric rules live in `INSTRUCTIONS`, versioned via
+  `INSTRUCTIONS_VERSION` so stability sweeps can compare prompt
+  revisions.
 - The agent MUST NOT compute deltas or macro math itself — it calls
   `validate_macro_consistency` and `calculate_discrepancy`.
 
 ### Tool interface contract
 
 ```python
-@agent.tool
-async def lookup_usda_by_name(
-    ctx: RunContext[Deps],
-    name: str,
-    category: str,
+# Lookups (network or bundled)
+async def lookup_usda_by_name(ctx, name, category,
     data_type: Literal["Foundation", "SR Legacy", "Branded"] = "Foundation",
-) -> NutritionReference | None:
-    """Look up nutrition data from USDA FoodData Central by name."""
+) -> NutritionReference | None: ...
+async def lookup_off_by_barcode(ctx, barcode: str) -> NutritionReference | None: ...
+async def lookup_ciqual_by_name(ctx, name: str, category: str) -> NutritionReference | None: ...
 
-@agent.tool
-async def lookup_off_by_barcode(
-    ctx: RunContext[Deps], barcode: str,
-) -> NutritionReference | None:
-    """Look up nutrition data from Open Food Facts by barcode."""
-
-@agent.tool
-def validate_macro_consistency(
-    nutrition: NutritionPer100g,
-) -> MacroConsistencyResult:
-    """Pure: protein*4 + carbs*4 + fat*9 ≈ calories, within tolerance."""
-
-@agent.tool
-def calculate_discrepancy(
-    provided: NutritionPer100g,
-    reference: NutritionPer100g,
-) -> DiscrepancyReport:
-    """Pure: per-field deltas and threshold flags."""
-
-@agent.tool
-def check_known_variance(
-    name: str, category: str,
-) -> VarianceInfo | None:
-    """Pure: lookup in a small catalogue of naturally variable foods."""
+# Pure logic — the agent MUST call these instead of doing arithmetic.
+def validate_macro_consistency(nutrition: NutritionPer100g) -> MacroConsistencyResult: ...
+def calculate_discrepancy(provided, reference) -> DiscrepancyReport: ...
+def assess_reference_completeness(reference) -> ReferenceCompletenessResult: ...
+def check_known_variance(name: str, category: str) -> VarianceInfo | None: ...
+def compare_semantics(source_a: SourceName, source_b: SourceName) -> SemanticsComparison: ...
 ```
+
+Every tool call is recorded in `Deps.trace` as a `ToolCall` with full
+`result_payload` for lookups so the LLM-as-judge can verify proposed
+corrections against the records the agent actually saw.
 
 ### Clients
 
@@ -207,9 +224,11 @@ def check_known_variance(
 ### Error handling
 
 - Never swallow. Log with context, then re-raise or return a structured error.
+- Each per-item task in `runner.py` wraps the agent call in `try/except`
+  and converts failures to `VerificationResult(status="ERROR", ...)` —
+  one bad item never kills the batch.
 - Tool exceptions become `VerificationResult(status="ERROR", ...)` at the
   runner level, not the tool level.
-- `asyncio.gather(..., return_exceptions=True)` in `runner.py`.
 
 ### Report
 
@@ -225,10 +244,14 @@ Write tests alongside implementation.
 
 **Highest priority (pure logic):**
 - `validate_macro_consistency`: pass / fail / borderline, table-driven.
-- `calculate_discrepancy`: delta math, threshold flags, missing fields.
-- `normalization`: USDA Foundation, SR Legacy, Branded → `NutritionReference`;
-  OFF payload → `NutritionReference`.
-- `check_known_variance`: catalogue hits and misses.
+- `calculate_discrepancy`: delta math, threshold flags, near-zero floor,
+  honest low-value ratios, missing fields.
+- `assess_reference_completeness`: zero-kcal, missing core macros,
+  optional saturated fat does NOT trigger.
+- `compare_semantics`: USDA↔CIQUAL carbs/energy notes, OFF↔USDA sodium
+  vs salt, order-independent, same-source returns empty.
+- `check_known_variance`: catalogue hits and misses, category guard.
+- `VerificationReasoning` validator: rejects digits in prose.
 
 **Clients (`respx`):**
 - 200 happy path, 404 no match, 429 rate limit → retry, timeout → retry → fail,

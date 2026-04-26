@@ -110,7 +110,7 @@ Five statuses, not a boolean:
 | `DISCREPANCY` | Source found, one or more macros outside tolerance; correction proposed |
 | `HIGH_VARIANCE` | Known naturally variable; provided value is within the plausible range |
 | `INCONCLUSIVE` | No authoritative source found or source incomplete |
-| `ERROR` | Tool/API failure (never crashes the batch; `return_exceptions=True`) |
+| `ERROR` | Tool/API failure caught per-item in the runner (never crashes the batch) |
 
 ### 4.5 Confidence rubric (explicit, not vibes)
 
@@ -199,8 +199,9 @@ against the record the agent actually saw.
 - `asyncio.Semaphore(MAX_CONCURRENT_VERIFICATIONS)` so a 50-item file
   doesn't open 50 parallel USDA sessions; per-client semaphore on OFF
   so it stays polite regardless of the global concurrency.
-- `asyncio.gather(..., return_exceptions=True)` — one bad item never kills
-  the batch.
+- Each per-item task wraps the agent call in `try/except` and converts
+  any failure to `VerificationResult(status="ERROR", ...)` — one bad
+  item never kills the batch.
 - `temperature=0`, model deployment recorded in report metadata.
 - **No on-disk cache.** Earlier drafts had a SQLite response cache; it
   was removed once the flake-rate on USDA and OFF dropped to acceptable
