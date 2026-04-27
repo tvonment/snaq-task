@@ -284,12 +284,3 @@ deliberately did **not** ship a `--apply-corrections` flag: merging
 proposed nutrition values back into product data on a confidence
 threshold is exactly the place where this kind of agent should *not*
 act unattended. Corrections live in `report.json` for a human to act on.
-
-## 11. Deliverables mapping
-
-| Brief asks for | Produced by |
-|---|---|
-| Working code, minimal setup | `uv run snaq-verify verify food_items.json` |
-| README (setup, decisions, future work) | `README.md` |
-| Output on `food_items.json` | `outputs/report.{json,md}` |
-| AI conversation log | `ai-session/` transcript export |

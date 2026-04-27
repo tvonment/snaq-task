@@ -2,134 +2,13 @@
 
 A command-line agent that verifies the nutrition data in `food_items.json`
 against authoritative sources (USDA FoodData Central, Open Food Facts,
-ANSES CIQUAL), flags discrepancies, and — when confident — proposes
-corrections.
+ANSES CIQUAL) and flags discrepancies.
 
 **Philosophy:** the LLM decides *which* source to trust and *why*; pure
 Python does the arithmetic. The hard parts are unit-testable.
 
-## Docs
-
-- [DESIGN.md](DESIGN.md) — architecture, scope decisions, confidence rubric.
-- [NARRATIVE.md](NARRATIVE.md) — how the build actually went, including
-  a critical self-review of what shipped.
-- [transcripts/](transcripts/) — raw VS Code Copilot Chat exports
-  (the receipts behind the narrative). See
-  [transcripts/README.md](transcripts/README.md).
-- [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md) — attribution for the
-  bundled CIQUAL subset.
-- [eval/judge.py](eval/judge.py) / [eval/stability.py](eval/stability.py)
-  — the "verify the verifier" layer. Judge grounds reasoning against
-  the trace the agent actually produced (not against truth); stability
-  measures agreement across K independent runs.
-
----
-
-## Setup
-
-Requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/).
-
-```bash
-# 1. Install dependencies
-uv sync
-
-# 2. Configure credentials
-cp .env.example .env
-# Edit .env and fill in:
-#   AZURE_OPENAI_ENDPOINT           (must end in /openai/v1/)
-#   AZURE_OPENAI_API_KEY
-#   AZURE_OPENAI_DEPLOYMENT         (verifier deployment, e.g. gpt-5-mini)
-#   AZURE_OPENAI_JUDGE_DEPLOYMENT   (optional; separate deployment for the
-#                                    LLM-as-judge so verifier and judge
-#                                    don't share failure modes, e.g.
-#                                    gpt-5-chat-1. Falls back to
-#                                    AZURE_OPENAI_DEPLOYMENT.)
-#   USDA_API_KEY                    (free, https://fdc.nal.usda.gov/api-key-signup)
-
-# 3. Run
-uv run snaq-verify verify food_items.json --out outputs/
-```
-
-Reports are written to `outputs/report.{json,md}`.
-
-### CLI
-
-```
-uv run snaq-verify verify food_items.json \
-    [--out outputs/] \
-    [--format json,md] \
-    [--concurrency 5] \
-    [--reasoning-effort minimal|low|medium|high] \
-    [-v | -vv]
-
-uv run snaq-verify judge outputs/report.json \
-    [--out outputs/judge.json] \
-    [--concurrency 3]
-
-uv run snaq-verify stability food_items.json \
-    [--runs 3] \
-    [--efforts minimal,low,medium,high] \
-    [--no-judge] \
-    [--concurrency 5]
-```
-
-The `judge` command writes `outputs/judge.json` + `outputs/judge.md`
-(verdicts per item, with `generated_at` and the `judge_deployment`
-used). Each concern is bucketed into an 8-kind taxonomy
-(`wrong_reference`, `correction_provenance`, `unit_mismatch`,
-`missing_citation`, `paraphrase`, `rubric_violation`,
-`variance_reasoning`, `nitpick`). **Read this honestly:** the judge
-checks that the verifier's reasoning is grounded *in the trace it
-produced*, not that the answer is correct. It catches paraphrase
-drift, unsupported citations, and rubric violations — not factual
-errors upstream of the sources.
-
-The `stability` command sweeps `reasoning_effort` levels and runs
-verify (and optionally judge) K times **per level**. Each run is
-written under `outputs/stability/<effort>/run_{k}/report.{json,md}`
-(+ `judge.{json,md}`) and aggregated into `outputs/stability/matrix.json`
-+ `matrix.md`. The matrix has two layers:
-
-- **Effort summary** — one row per effort level: status agreement,
-  confidence, judge grounded rate, Jaccard kind-set similarity, and
-  mean tool calls per run as a cost proxy. Read it as: *what's the
-  lowest effort whose grounded rate matches `high`?* That's the
-  cheapest setting to ship.
-- **Per-effort detail** — verifier and judge tables with one row per
-  food item showing every run side by side, the modal status, and
-  per-field correction agreement on the modal-status subset.
-
-At n=11 with no hand-labelled ground truth, sweeping effort and
-measuring *consistency under varied effort* is more honest than
-pretending to measure correctness — and the cost-vs-quality tradeoff
-falls straight out of the same matrix. Cost note: the default sweep
-is 4 efforts × 3 runs × 11 items = 132 verifier calls (+132 judge
-calls); narrow it with `--efforts low,medium` while iterating.
-
-`--reasoning-effort` is forwarded to OpenAI-family reasoning models
-(gpt-5, o-series). It's a per-run override for one-shot verifications;
-`stability` sweeps efforts independently. `-v` raises `snaq_verify` to
-DEBUG; `-vv` also re-enables the raw `httpx` / `openai` / `pydantic-ai`
-INFO firehose when you need to see every HTTP call.
-
-Reports stamp `Instructions: vN` in the header (and
-`instructions_version` in `report.json` / `matrix.json`). Bumping
-`INSTRUCTIONS_VERSION` in [src/snaq_verify/agent.py](src/snaq_verify/agent.py)
-is how revised prompts get tracked across stability runs without a
-full prompt-management framework — at two prompts the stamp is enough.
-
-### Tests
-
-```bash
-uv run ruff check .
-uv run pytest -q
-```
-
-94 unit tests covering pure logic, HTTP clients (mocked via `respx`,
-including 429 + `Retry-After` handling), structured-reasoning validators,
-the semantics catalogue, the judge concern-kind aggregation, the
-stability aggregator, and the v2 instruction rules. No network
-required.
+> Looking for the deeper write-ups? See [Further reading](#further-reading)
+> at the bottom (DESIGN, NARRATIVE, transcripts).
 
 ---
 
@@ -163,6 +42,207 @@ docker-compose, no frontend.
 
 ---
 
+## Setup
+
+Requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/).
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Configure credentials
+cp .env.example .env
+# Edit .env and fill in:
+#   AZURE_OPENAI_ENDPOINT           (must end in /openai/v1/)
+#   AZURE_OPENAI_API_KEY
+#   AZURE_OPENAI_DEPLOYMENT         (verifier deployment, e.g. gpt-5-mini)
+#   AZURE_OPENAI_JUDGE_DEPLOYMENT   (optional; separate deployment for the
+#                                    LLM-as-judge so verifier and judge
+#                                    don't share failure modes, e.g.
+#                                    gpt-5-chat-1. Falls back to
+#                                    AZURE_OPENAI_DEPLOYMENT.)
+#   USDA_API_KEY                    (free, https://fdc.nal.usda.gov/api-key-signup)
+
+# 3. Run
+uv run snaq-verify verify food_items.json --out outputs/
+```
+
+Reports are written to `outputs/report.{json,md}`.
+
+---
+
+## Quick start — reviewer walkthrough
+
+The 30-second path. Each step assumes the previous one finished.
+
+**1. Verify the provided file.**
+
+```bash
+uv run snaq-verify verify food_items.json --out outputs/
+```
+
+You'll see one progress line per item, then two files appear:
+`outputs/report.json` (machine-readable, with full tool trace) and
+`outputs/report.md` (human summary table — open this first).
+
+**2. (Optional) Have the LLM-as-judge grade the verifier's reasoning.**
+
+```bash
+uv run snaq-verify judge outputs/report.json --out outputs/
+```
+
+Writes `outputs/judge.json` and `outputs/judge.md`. The judge re-reads
+the verifier's trace and flags reasoning that isn't grounded in the
+records the agent actually saw.
+
+**3. (Optional) Run a stability sweep.**
+
+```bash
+uv run snaq-verify stability food_items.json --runs 3 --efforts medium
+```
+
+Writes per-run reports under `outputs/stability/medium/run_{1,2,3}/`
+and an aggregated [outputs/stability/matrix.md](outputs/stability/matrix.md).
+Open the matrix to see how often the agent agrees with itself across
+runs and how the judge graded each.
+
+> **Heads-up on cost.** The default sweep is 4 efforts × 3 runs × 11
+> items = 132 verifier calls (+132 judge calls). For a quick smoke
+> test pass `--efforts medium --runs 2 --no-judge`.
+
+---
+
+## Commands in detail
+
+Three subcommands. They share the flags listed under
+[Common flags](#common-flags) below.
+
+### `verify` — run the agent over a food list
+
+Reads a `food_items.json`-shaped file, runs the verification agent
+once per item in parallel, writes a report.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--out PATH` | `outputs/` | Directory the reports are written to. |
+| `--format FMT` | `json,md` | Comma-separated list. `json`, `md`, or both. |
+| `--concurrency N` | `5` | Max concurrent agent runs (also caps per-client HTTP). |
+| `--reasoning-effort LVL` | model default | `minimal` / `low` / `medium` / `high`. Forwarded to OpenAI reasoning models (gpt-5, o-series). |
+| `-v` / `-vv` | off | `-v` raises `snaq_verify` to DEBUG; `-vv` also re-enables the raw `httpx` / `openai` / `pydantic-ai` INFO firehose. |
+
+**Example.**
+
+```bash
+uv run snaq-verify verify food_items.json \
+    --out outputs/ --reasoning-effort medium -v
+```
+
+**Expected outcome.**
+
+- `outputs/report.json` — every item with `status`, `confidence`,
+  `discrepancies`, `proposed_correction`, structured `reasoning`, and
+  the full `tool_trace` (name, args, result payload, latency).
+- `outputs/report.md` — Summary table (one row per item) plus a
+  details section per non-`VERIFIED` item.
+- Console — one line per item as it completes.
+
+### `judge` — grade the verifier's reasoning
+
+Re-reads a `report.json` and asks an LLM-as-judge whether each item's
+reasoning is *grounded in the trace the agent produced*. It is **not**
+grading factual correctness upstream of the sources — it catches
+paraphrase drift, unsupported citations, and rubric violations.
+
+Each concern is bucketed into an 8-kind taxonomy: `wrong_reference`,
+`correction_provenance`, `unit_mismatch`, `missing_citation`,
+`paraphrase`, `rubric_violation`, `variance_reasoning`, `nitpick`.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--out PATH` | `outputs/` | Where `judge.{json,md}` get written. |
+| `--concurrency N` | `3` | Max concurrent judge calls. |
+
+**Example.**
+
+```bash
+uv run snaq-verify judge outputs/report.json --out outputs/
+```
+
+**Expected outcome.**
+
+- `outputs/judge.json` — verdicts per item (`grounded` bool, concerns
+  with `kind` + free-text), plus `generated_at` and the
+  `judge_deployment` used.
+- `outputs/judge.md` — one row per item with a tick / cross and the
+  concerns rolled up.
+
+### `stability` — sweep effort × K runs
+
+Runs `verify` (and optionally `judge`) K times per `reasoning_effort`
+level, then aggregates a stability matrix. The point: at n=11 with no
+hand-labelled ground truth, measuring the agent's *consistency under
+varied effort* is more honest than pretending to measure correctness
+— and the cost-vs-quality tradeoff falls straight out of the same
+matrix.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--runs N` | `3` | Runs per effort level. |
+| `--efforts LIST` | `minimal,low,medium,high` | Comma-separated effort levels to sweep. |
+| `--no-judge` | judge enabled | Skip the LLM-as-judge step (halves API spend). |
+| `--concurrency N` | `5` | Forwarded to each `verify` run. |
+
+**Example.**
+
+```bash
+uv run snaq-verify stability food_items.json \
+    --runs 3 --efforts low,medium,high
+```
+
+**Expected outcome.** Each verify run lands at
+`outputs/stability/<effort>/run_{k}/report.{json,md}` (plus
+`judge.{json,md}` unless `--no-judge`). Aggregated into:
+
+- **`outputs/stability/matrix.json`** — full data.
+- **`outputs/stability/matrix.md`** — two layers:
+  - **Effort summary** — one row per level: status agreement,
+    confidence, judge grounded rate, Jaccard kind-set similarity, and
+    mean tool calls per run as a cost proxy. Read it as: *what's the
+    lowest effort whose grounded rate matches `high`?* That's the
+    cheapest setting to ship.
+  - **Per-effort detail** — verifier and judge tables with one row
+    per food item showing every run side by side, the modal status,
+    and per-field correction agreement on the modal-status subset.
+
+### Common flags
+
+- **`--reasoning-effort`** is a per-run override on `verify`.
+  `stability` sweeps the levels independently via `--efforts`.
+- **`-v` / `-vv`** controls log verbosity on every subcommand.
+- **`INSTRUCTIONS_VERSION`** in
+  [src/snaq_verify/agent.py](src/snaq_verify/agent.py) gets stamped
+  into every report (`Instructions: vN` in the Markdown header,
+  `instructions_version` in JSON). Bump it when you edit the prompt
+  so stability sweeps can compare prompt revisions — at two prompts
+  the stamp is enough, no full prompt-management framework needed.
+
+---
+
+## Tests
+
+```bash
+uv run ruff check .
+uv run pytest -q
+```
+
+94 unit tests covering pure logic, HTTP clients (mocked via `respx`,
+including 429 + `Retry-After` handling), structured-reasoning validators,
+the semantics catalogue, the judge concern-kind aggregation, the
+stability aggregator, and the v2 instruction rules. No network
+required.
+
+---
+
 ## Design decisions (short version)
 
 | Decision | Why |
@@ -176,7 +256,6 @@ docker-compose, no frontend.
 | **Route by item shape** | Barcode → Open Food Facts; generic → USDA Foundation → SR Legacy + CIQUAL. Explicitly avoid USDA Branded for generic items (#1 source of wrong matches). |
 | **Relevance gate on USDA search** | FDC search will happily return "Crackers" for "Whole Milk". A small token-recall check between query and match description filters those out; the agent sees `None` instead. |
 | **Known-variance catalogue** | Farmed vs wild salmon, avocado, whole milk fat bands, ground beef: these are *naturally* variable and resolve to `HIGH_VARIANCE`, not `DISCREPANCY`. |
-| **Corrections are conservative** | Only proposed when `confidence >= 0.8` AND exactly one authoritative source was used. Matches how a human nutritionist would behave. |
 | **Confidence caps for incomplete references** | When a matched source record has zero kcal or is missing two+ core macros, confidence is capped at 0.6 no matter the source type. Without this, a USDA Foundation record missing `Energy (kcal, 1008)` would still score 0.8 — even though the agent then has to back-compute the value itself. |
 | **Structured reasoning, digit-free** | `VerificationResult.reasoning` is a Pydantic model (`routing_decision` / `source_choice_rationale` / `variance_notes` / `correction_rationale`), and a `model_validator` rejects any numerals in the prose. Numbers belong in `discrepancies` and `proposed_correction`; prose is for *why*. |
 | **Structured trace for the judge** | Every lookup tool records the full `NutritionReference` it returned into `ToolCall.result_payload`. The LLM-as-judge can verify each `proposed_correction` value against the record the agent actually saw instead of trusting the agent's paraphrase. |
@@ -209,13 +288,6 @@ family's failure modes; picking a *different* deployment for the judge
 systematic misreading by one side won't be silently rubber-stamped by
 the other. If `AZURE_OPENAI_JUDGE_DEPLOYMENT` is unset the judge falls
 back to the verifier deployment, which is convenient but weaker.
-
-**Content filter note.** Foundry's Prompt Shields can flag assertive
-system-prompt phrasing (e.g. "You MUST NOT...") as a jailbreak attempt.
-The system prompt in this repo is written in a neutral, descriptive tone
-to avoid that; if you still see `ResponsibleAIPolicyViolation /
-jailbreak` errors, lower the "Jailbreak detection" severity on the
-deployment's content filter.
 
 ---
 
@@ -307,10 +379,10 @@ The first sweep produced this baseline at `Instructions: v1`,
 | `high` | **100%** | 0.78 | 33% | 0.72 | 8.9 |
 
 The diagnostic reading: **higher reasoning effort buys consistency
-but not grounding.** Status agreement scales with effort (88\u2192100%);
+but not grounding.** Status agreement scales with effort;
 grounded rate plateaus at ~30% across all four levels. That's a
 strong signal the residual judge concerns aren't "the agent didn't
-think long enough" \u2014 they're tool-shape and instruction problems.
+think long enough" they're tool-shape and instruction problems.
 
 Inspecting the judge concerns surfaced four recurring patterns:
 `unit_mismatch` (USDA-vs-CIQUAL carbs/energy treated as discrepancy
@@ -327,12 +399,12 @@ I shipped the instruction tightening as `Instructions: v2`:
 - Mandate `compare_semantics_tool` *before* `calculate_discrepancy_tool`
   for cross-source comparisons.
 - State explicitly that fields covered by a `compare_semantics` note
-  do not count toward DISCREPANCY \u2014 the definitional rule is no
+  do not count toward DISCREPANCY the definitional rule is no
   longer narrative, it's a hard contract.
 - Cap confidence at 0.8 when two sources disagree on a non-definitional
   field beyond tolerance (closes the rubric ambiguity).
 - Make HIGH_VARIANCE *mandatory* when the catalogue matches and every
-  exceeding field is in `variable_fields` \u2014 no exceptions.
+  exceeding field is in `variable_fields` no exceptions.
 - Realign the judge prompt to grade against that exact rubric so
   verifier and judge stop talking past each other.
 
@@ -350,7 +422,7 @@ Re-running 3 runs at `medium` effort, `Instructions: v2`:
 Grounded rate triples at the same effort level; concern-kind sets
 become highly stable across runs (Jaccard 0.61\u20920.88), and `medium`
 now matches what previously required `high`. The two items still
-ungrounded across runs are `egg-whole-raw` and `avocado-raw` \u2014 both
+ungrounded across runs are `egg-whole-raw` and `avocado-raw` both
 exactly the failure modes the "Future work" backlog targets (top-N
 USDA candidates with match-quality, and stricter mechanical variance
 enforcement).
@@ -395,7 +467,7 @@ tests/             pytest + pytest-asyncio + respx — no network
 
 The "Stability findings" section above shows that v2 instructions
 closed most of the grounding gap, but two failure modes survived
-across runs (`egg-whole-raw`, `avocado-raw`). Items 1\u20133 below are the
+across runs (`egg-whole-raw`, `avocado-raw`). Items below are the
 **direct Phase 2 backlog** that would address them; items 4+ are the
 broader future work.
 
@@ -483,6 +555,20 @@ USDA's WAF (api.nal.usda.gov via api.data.gov) blocks some cloud / CI
 egress ranges with `HTTP 403 Forbidden` regardless of API key — even
 `DEMO_KEY`. If you see 403s for every USDA lookup, run from a
 residential IP or a non-blocked host; your `USDA_API_KEY` is fine.
+
+---
+
+## Further reading
+
+- [DESIGN.md](DESIGN.md) — full architecture write-up, scope decisions,
+  confidence rubric.
+- [NARRATIVE.md](NARRATIVE.md) — how the build actually went, including
+  a critical self-review of what shipped.
+- [transcripts/](transcripts/) — raw VS Code Copilot Chat exports
+  (the receipts behind the narrative). See
+  [transcripts/README.md](transcripts/README.md).
+- [data/CIQUAL_LICENSE.md](data/CIQUAL_LICENSE.md) — attribution for the
+  bundled CIQUAL subset.
 
 ---
 
